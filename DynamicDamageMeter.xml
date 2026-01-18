@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="DynamicDamageMeter"
+   author="Heracles"
+   id="a679f999c303e8fc82fe8445"
+   language="Lua"
+   purpose="Personal and Group Tracking"
+   save_state="y"
+   date_written="2024-05-20"
+   requires="5.06"
+   version="4.0"
+   >
+</plugin>
+
+<triggers>
+  <trigger
+   enabled="n" regexp="y" 
+   match="^(?:\*?\[\d+\] )?Your (?<ability>.+?) (?:misses|tickles|bruises|scratches|grazes|nicks|scars|hits|injures|wounds|mauls|maims|mangles|mars|LACERATES|DECIMATES|DEVASTATES|ERADICATES|OBLITERATES|EXTIRPATES|INCINERATES|MUTILATES|DISEMBOWELS|MASSACRES|DISMEMBERS|RENDS|BLASTS|DEMOLISHES|SHREDS|DESTROYS|PULVERIZES|VAPORIZES|ATOMIZES|ASPHYXIATES|RAVAGES|FISSURES|LIQUIDATES|EVAPORATES|SUNDERS|TEARS|WASTES|CREMATES|ANNIHILATES|IMPLODES|EXTERMINATES|SHATTERS|SLAUGHTERS|RUPTURES|NUKES|GLACIATES|METEORITES|SUPERNOVAS|does \w+ things to|.*?) (.*) \[(?<damage>[\d,]+)\].?$"
+   script="dynamic_tracking" group="dmg_triggers" sequence="1"
+   ignore_case="y"
+  ></trigger>
+
+  <trigger
+   enabled="n" regexp="y" 
+   match="^(?:\*?\[\d+\] )?(?<pname>[A-Za-z \-]+)\'s (?<msg>.+?) (.*?) \[(?<pdamage>[\d,]+)\].?$"
+   script="group_tracking" group="dmg_triggers" sequence="2"
+   ignore_case="y"
+  ></trigger>
+</triggers>
+
+<aliases>
+  <alias match="^dmg auto$" enabled="y" regexp="y" script="toggle_meter" />
+  <alias match="^dmg reset$" enabled="y" regexp="y" script="DamageStats" />
+  <alias match="^dmg rep (.*?)$" enabled="y" regexp="y" script="report_meter" />
+  <alias match="^dmg grep (.*?)$" enabled="y" regexp="y" script="report_group" />
+  <alias match="^dmg help$" enabled="y" regexp="y" script="show_help" />
+</aliases>
+
+<script>
+<![CDATA[
+local AllTimeDamage = {}
+local GroupDamage = {}
+local valid_group_members = {}
+local my_name = GetVariable("my_name") or "Heracles"
+local meter_active = false 
+local total_combat_time = 0
+local os_start = 0
+local curr_state = ""
+
+function show_help()
+    Note("")
+    ColourNote("orange", "", "--- Dynamic Damage Meter v4.0 ---")
+    ColourNote("white", "", "dmg auto   ", "silver", "", "- Toggle tracking On/Off")
+    ColourNote("white", "", "dmg reset  ", "silver", "", "- Wipe ALL data")
+    ColourNote("white", "", "dmg rep    ", "silver", "", "- Personal breakdown + Total + DPS")
+    ColourNote("white", "", "dmg grep   ", "silver", "", "- Group totals")
+    ColourNote("orange", "", "---------------------------------")
+end
+
+function toggle_meter()
+    meter_active = not meter_active
+    EnableTriggerGroup("dmg_triggers", meter_active)
+    ColourNote("red", "", " >>> ", "white", "", "Damage Meter: ", meter_active and "green" or "red", "", meter_active and "ENABLED" or "DISABLED")
+end
+
+function DamageStats()
+    AllTimeDamage = {}; GroupDamage = {}; total_combat_time = 0; os_start = 0
+    Note(">>> Damage Meter Reset.")
+end
+
+function clean_ability(str)
+    -- Removes symbols and common verb fragments that might be captured by (.+?)
+    local cleaned = str:gsub("[%s%<-%*%>:!%+%=%[%]%/\\|]+$", "")
+    -- Remove specific trailing words if they were caught
+    cleaned = cleaned:gsub("%sdoes$", ""):gsub("%sdoes%s%w+$", "")
+    cleaned = cleaned:gsub("^%l", string.upper)
+    return cleaned
+end
+
+function dynamic_tracking(name, line, wildcards)
+    if line:find("warm feeling") or line:find("fills your body") then return end
+
+    local ability = clean_ability(wildcards.ability)
+    local dmg = tonumber((string.gsub(wildcards.damage or "0", ",", ""))) or 0
+    
+    if dmg > 0 then
+        AllTimeDamage[ability] = (AllTimeDamage[ability] or 0) + dmg
+        GroupDamage[my_name] = (GroupDamage[my_name] or 0) + dmg
+        if os_start == 0 then os_start = os.time() end
+    end
+end
+
+function group_tracking(name, line, wildcards)
+    local player = wildcards.pname
+    if valid_group_members[player] or player == my_name then
+        local dmg = tonumber((string.gsub(wildcards.pdamage or "0", ",", ""))) or 0
+        if dmg > 0 then
+            GroupDamage[player] = (GroupDamage[player] or 0) + dmg
+            if os_start == 0 then os_start = os.time() end
+        end
+    end
+end
+
+function report_meter(name, line, wildcards)
+    local rep_chan = wildcards[1] ~= "" and wildcards[1] or "say"
+    local total = 0
+    for _, v in pairs(AllTimeDamage) do total = total + v end
+    if total == 0 then return Note("No damage recorded.") end
+    
+    local sorted = {}
+    for k, v in pairs(AllTimeDamage) do table.insert(sorted, {n=k, v=v}) end
+    table.sort(sorted, function(a,b) return a.v > b.v end)
+    
+    local out = {}
+    for _, d in ipairs(sorted) do
+        table.insert(out, string.format("@D%s: @w%s @R[@w%d%%@R]", d.n, commas(d.v), math.floor((d.v/total)*100)))
+    end
+
+    local active_time = total_combat_time
+    if os_start > 0 then active_time = active_time + (os.time() - os_start) end
+    local dps = math.floor(total / (active_time > 0 and active_time or 1))
+    
+    Send(rep_chan .. " @R[@DPersonal Report@R] " .. table.concat(out, " ") .. " @DTotal: @w" .. commas(total) .. " @DDPS: @w" .. commas(dps))
+end
+
+function report_group(name, line, wildcards)
+    local rep_chan = wildcards[1] ~= "" and wildcards[1] or "say"
+    local total = 0
+    for _, v in pairs(GroupDamage) do total = total + v end
+    if total == 0 then return end
+    
+    local sorted = {}
+    for k, v in pairs(GroupDamage) do table.insert(sorted, {n=k, v=v}) end
+    table.sort(sorted, function(a,b) return a.v > b.v end)
+    
+    local out = {}
+    for _, d in ipairs(sorted) do
+        table.insert(out, string.format("@D%s: @w%s @R[@w%d%%@R]", d.n, commas(d.v), math.floor((d.v/total)*100)))
+    end
+    Send(rep_chan .. " @R[@DGroup Totals@R] " .. table.concat(out, " "))
+end
+
+function OnPluginBroadcast(msg, id, name, text)
+    if id == '3e7dedbe37e44942dd46d264' then
+        if text == "char.base" then
+            local _, pvar = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpval", "char.base")
+            local res = loadstring("return " .. pvar)()
+            if res and res.name then 
+                my_name = res.name 
+                SetVariable("my_name", my_name)
+            end
+        elseif text == "group" then
+            local _, pvar = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpval", "group")
+            local res = loadstring("return " .. pvar)()
+            local new_whitelist = {}
+            if res and res.members then
+                for _, member in ipairs(res.members) do new_whitelist[member.name] = true end
+            end
+            valid_group_members = new_whitelist
+        elseif text == "char.status" and meter_active then
+            local _, pvar = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpval", "char.status")
+            local status = loadstring("return " .. pvar)()
+            if status and status.state == "8" and curr_state ~= "8" then
+                os_start = os.time()
+            elseif status and status.state ~= "8" and curr_state == "8" then
+                total_combat_time = total_combat_time + (os.time() - os_start)
+                os_start = 0
+            end
+            curr_state = (status and status.state) or ""
+        end
+    end
+end
+
+function commas(num)
+    local result = tostring(math.floor(num))
+    while true do  
+        result, k = string.gsub(result, "^(-?%d+)(%d%d%d)", '%1,%2')
+        if k == 0 then break end
+    end
+    return result
+end
+]]>
+</script>
+</muclient>
