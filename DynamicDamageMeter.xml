@@ -10,7 +10,7 @@
    save_state="y"
    date_written="2026-01-18"
    requires="5.06"
-   version="5.3"
+   version="5.4"
    >
 </plugin>
 
@@ -42,7 +42,7 @@
 <![CDATA[
 local AllTimeDamage = {}
 local GroupDamage = {}
-local valid_group_members = {}
+local valid_group_members = {} -- Stores [Name] = here_status (1 or 0)
 local my_name = GetVariable("my_name") or "Heracles"
 local meter_active = false 
 local total_combat_time = 0
@@ -66,11 +66,11 @@ function OnPluginInstall() show_help() end
 
 function show_help()
     Note("")
-    ColourNote("orange", "", "--- Dynamic Damage Meter v5.3 ---")
+    ColourNote("orange", "", "--- Dynamic Damage Meter v5.4 ---")
     ColourNote("white", "", "dmg auto    ", "silver", "", "- Toggle tracking On/Off")
     ColourNote("white", "", "dmg reset   ", "silver", "", "- Wipe ALL data")
     ColourNote("white", "", "dmg rep     ", "silver", "", "- Personal breakdown (Top 4 + Melee + Other)")
-    ColourNote("white", "", "dmg grep    ", "silver", "", "- Group breakdown (GMCP Validated Only)")
+    ColourNote("white", "", "dmg grep    ", "silver", "", "- Group breakdown (Present Members Only)")
     ColourNote("orange", "", "---------------------------------")
 end
 
@@ -119,7 +119,7 @@ function report_meter(name, line, wildcards)
     local rep_chan = wildcards[1] ~= "" and wildcards[1] or "say"
     local total = 0
     for _, v in pairs(AllTimeDamage) do total = total + v end
-    if total == 0 then return Note("No damage recorded.") end
+    if total == 0 then return end
     local sorted = {}
     for k, v in pairs(AllTimeDamage) do table.insert(sorted, {n=k, v=v}) end
     table.sort(sorted, function(a,b) return a.v > b.v end)
@@ -143,18 +143,18 @@ end
 function report_group(name, line, wildcards)
     local rep_chan = wildcards[1] ~= "" and wildcards[1] or "say"
     
-    -- Filter and Calculate total only for CURRENT group members
     local filtered_data = {}
     local group_total = 0
     
     for player, dmg in pairs(GroupDamage) do
-        if valid_group_members[player] or player == my_name then
+        -- Only include if they are 'here' (here == 1) or if it's you
+        if valid_group_members[player] == 1 or player == my_name then
             table.insert(filtered_data, {n=player, v=dmg})
             group_total = group_total + dmg
         end
     end
     
-    if group_total == 0 then return Note("No group damage recorded for current members.") end
+    if group_total == 0 then return Note("No damage recorded for members present in room.") end
     
     table.sort(filtered_data, function(a,b) return a.v > b.v end)
     
@@ -176,7 +176,10 @@ function OnPluginBroadcast(msg, id, name, text)
             local res = loadstring("return " .. pvar)()
             local new_whitelist = {}
             if res and res.members then
-                for _, member in ipairs(res.members) do new_whitelist[member.name] = true end
+                for _, member in ipairs(res.members) do 
+                    -- Store the 'here' status from info block
+                    new_whitelist[member.name] = tonumber(member.info.here) or 0
+                end
             end
             valid_group_members = new_whitelist
         elseif text == "char.status" and meter_active then
