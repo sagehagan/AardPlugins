@@ -7,13 +7,13 @@
     author="Heracles" 
     id="54375a7029e6eebe04960408" 
     language="Lua" 
-    purpose="GMCP Auto Caster - V39 Clear Alt Feature" 
+    purpose="GMCP Auto Caster - V41 Help Alignment" 
     save_state="y" 
-    version="39.0">
+    version="41.0">
   </plugin>
 
   <triggers>
-    <trigger enabled="y" match="*unaffected*" script="ImmunityTrigger" sequence="100" />
+    <trigger enabled="y" match="^Your * unaffected*$" regexp="y" script="ImmunityTrigger" sequence="100" />
   </triggers>
 
   <aliases>
@@ -92,14 +92,12 @@
         if not Caster.is_fighting or Caster.temp_disable then return end
         local text = line:lower()
 
-        -- CASE 1: Universal Shutdown if no keys are set
         if Caster.cfg.pri_key == "" then
-            Caster.warn("IMMUNITY DETECTED! Universal Shutdown.")
+            Caster.warn("YOUR spell was UNAFFECTED! Universal Shutdown.")
             Caster.temp_disable = true
             return
         end
 
-        -- CASE 2: Keyed logic
         if not Caster.using_alt then
             if text:find(Caster.cfg.pri_key:lower()) then
                 if Caster.cfg.alt ~= "" then
@@ -176,18 +174,12 @@
         if cmd == "acalt clear" then
             Caster.cfg.alt = ""; Caster.cfg.pri_key = ""; Caster.cfg.alt_key = ""
             SetVariable("alt", ""); SetVariable("pri_key", ""); SetVariable("alt_key", "")
-            Caster.log("Alt Skill and Keywords CLEARED. Reverting to Universal Shutdown.", "lime")
+            Caster.log("Alt Skill and Keywords CLEARED. Universal Shutdown.", "lime")
         elseif cmd:find("^acalt") then
             if wildcards.skill and wildcards.pri and wildcards.alt then
-                Caster.cfg.alt = wildcards.skill
-                Caster.cfg.pri_key = wildcards.pri
-                Caster.cfg.alt_key = wildcards.alt
-                SetVariable("alt", wildcards.skill)
-                SetVariable("pri_key", wildcards.pri)
-                SetVariable("alt_key", wildcards.alt)
+                Caster.cfg.alt = wildcards.skill; Caster.cfg.pri_key = wildcards.pri; Caster.cfg.alt_key = wildcards.alt
+                SetVariable("alt", wildcards.skill); SetVariable("pri_key", wildcards.pri); SetVariable("alt_key", wildcards.alt)
                 Caster.log("Alt Configured: Use '" .. wildcards.skill .. "' if '" .. wildcards.pri .. "' is immune.", "orange")
-            else
-                Caster.log("Syntax Error: acalt <skill> <pri_key> <alt_key> (or 'acalt clear')", "red")
             end
         elseif cmd:find("^acopen") then
             local val = wildcards.cmd or ""
@@ -246,29 +238,31 @@
         ColourNote("silver", "", "--------------------------------------------------")
         ColourNote("cyan", "", " [ AUTO-CASTER GMCP HELP ] ")
         Note("")
-        ColourTell("yellow", "", " ac <skill>      ") ColourNote("silver", "", "   - Set primary attack loop.")
-        ColourTell("orange", "", " acalt <sk> <p> <a>") ColourNote("silver", "", " - Set alt skill and damage keywords.")
-        ColourTell("orange", "", " acalt clear     ") ColourNote("silver", "", "   - Wipe alt settings (Universal Shutdown).")
-        ColourTell("yellow", "", " ac              ") ColourNote("silver", "", "   - Toggle main system power.")
+        ColourTell("yellow", "", " ac <skill>           ") ColourNote("silver", "", "   - Set primary attack loop.")
+        ColourTell("orange", "", " acalt <sk> <p> <a>   ") ColourNote("silver", "", "   - Set alt skill and damage keywords.")
+        ColourTell("orange", "", " acalt clear          ") ColourNote("silver", "", "   - Wipe alt settings (Universal Shutdown).")
+        ColourTell("yellow", "", " ac                   ") ColourNote("silver", "", "   - Toggle main system power.")
         Note("")
-        ColourTell("lime", "", " acopen <skill>  ") ColourNote("silver", "", "   - Fires ONCE at start of combat.")
+        ColourTell("lime", "", " acopen <skill>       ") ColourNote("silver", "", "   - Fires ONCE at start of combat.")
         ColourNote("gray", "", "   Example: acopen cast 8 (Casts spell 8 on combat start)")
         Note("")
-        ColourTell("lime", "", " acheal <skill>  ") ColourNote("silver", "", "   - Fires ONCE at end of combat.")
+        ColourTell("lime", "", " acheal <skill>       ") ColourNote("silver", "", "   - Fires ONCE at end of combat.")
         ColourNote("gray", "", "   Example: acheal c 106 heracles (exclude target to heal self)")
         Note("")
-        ColourTell("lime", "", " acconsume       ") ColourNote("silver", "", "   - Toggle 'consume' command after combat.")
+        ColourTell("lime", "", " acconsume            ") ColourNote("silver", "", "   - Toggle 'consume' command after combat.")
         Note("")
-        ColourTell("orange", "", " acquaff <t> <%> <c> ") Note("")
+        ColourTell("orange", "", " acquaff <t> <%> <c>  ") Note("")
         ColourTell("silver", "", "   Type <t>: hp | mn | mv")
         ColourTell("silver", "", "   Example:  acquaff hp 40 3 (Quaff 3x at 40% HP)")
         Note("")
-        ColourTell("orange", "", " acquaff         ") ColourNote("silver", "", "   - Toggle auto-potions.")
+        ColourTell("orange", "", " acquaff              ") ColourNote("silver", "", "   - Toggle auto-potions.")
         Note("")
         ColourNote("red", "", " WARNING: Auto-Quaff REQUIRES Durel's 'dinv' plugin.")
         ColourNote("red", "", " Ensure 'dinv consume big mana' (etc) is configured.")
         Note("")
         ColourNote("cyan", "", " IMMUNITY FALLBACK LOGIC:")
+        ColourTell("silver", "", " Use: ") ColourNote("yellow", "", "acalt <alt_skill> <primary_key> <alt_key>")
+        Note("")
         Note(" 1. Primary Keyword: Match the first word of your primary damage.")
         Note(" 2. Alt Keyword: Match the first word of your alternate damage.")
         Note("")
@@ -276,7 +270,8 @@
         Note(" -> If 'fury' (Primary) is UNAFFECTED: Swaps to 'cast 360'.")
         Note(" -> If 'neural' (Alt) is UNAFFECTED: Shutdown until combat ends.")
         Note("")
-        ColourNote("red", "", " If NO acalt is configured: ANY 'unaffected' message causes shutdown.")
+        ColourNote("red", "", " System ONLY triggers on lines starting with 'Your'.")
+        ColourNote("red", "", " If NO acalt is configured: ANY 'Your ... unaffected' shuts down.")
         ColourNote("red", "", " Fallback chains from Primary -> Alt -> Lockdown.")
         ColourNote("silver", "", "--------------------------------------------------")
     end
@@ -303,7 +298,7 @@
             if base then is_navigator = (base.subclass == "Navigator") end
         end
     end
-    Caster.log("V39.0 Loaded. Added 'acalt clear' command.", "lime")
+    Caster.log("V41.0 Loaded. Help file formatting improved.", "lime")
     ]]>
   </script>
 </muclient>
