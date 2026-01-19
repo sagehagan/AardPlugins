@@ -6,11 +6,11 @@
    author="Heracles"
    id="a679f999c303e8fc82fe8445"
    language="Lua"
-   purpose="Personal and Group Tracking"
+   purpose="Personal and Group Damage Tracking"
    save_state="y"
-   date_written="2024-05-20"
+   date_written="2026-01-19"
    requires="5.06"
-   version="4.0"
+   version="4.2"
    >
 </plugin>
 
@@ -49,13 +49,23 @@ local total_combat_time = 0
 local os_start = 0
 local curr_state = ""
 
+-- Persistent variable for acalt skill
+local acalt_skill = GetVariable("acalt_skill") or "None"
+
+function OnPluginInstall()
+    show_help()
+end
+
 function show_help()
     Note("")
-    ColourNote("orange", "", "--- Dynamic Damage Meter v4.0 ---")
+    ColourNote("orange", "", "--- Dynamic Damage Meter v4.2 ---")
     ColourNote("white", "", "dmg auto   ", "silver", "", "- Toggle tracking On/Off")
     ColourNote("white", "", "dmg reset  ", "silver", "", "- Wipe ALL data")
-    ColourNote("white", "", "dmg rep    ", "silver", "", "- Personal breakdown + Total + DPS")
+    ColourNote("white", "", "dmg rep    ", "silver", "", "- Top 5 + Other + DPS")
     ColourNote("white", "", "dmg grep   ", "silver", "", "- Group totals")
+    Note("")
+    Note("Author: Heracles")
+    Note("Stored acalt Skill: " .. acalt_skill)
     ColourNote("orange", "", "---------------------------------")
 end
 
@@ -67,13 +77,12 @@ end
 
 function DamageStats()
     AllTimeDamage = {}; GroupDamage = {}; total_combat_time = 0; os_start = 0
-    Note(">>> Damage Meter Reset.")
+    Note(">>> Damage Meter Data Reset.")
 end
 
 function clean_ability(str)
-    -- Removes symbols and common verb fragments that might be captured by (.+?)
+    -- Strips trailing symbols: < > * - : + ! = [ ] / \ |
     local cleaned = str:gsub("[%s%<-%*%>:!%+%=%[%]%/\\|]+$", "")
-    -- Remove specific trailing words if they were caught
     cleaned = cleaned:gsub("%sdoes$", ""):gsub("%sdoes%s%w+$", "")
     cleaned = cleaned:gsub("^%l", string.upper)
     return cleaned
@@ -114,8 +123,19 @@ function report_meter(name, line, wildcards)
     table.sort(sorted, function(a,b) return a.v > b.v end)
     
     local out = {}
-    for _, d in ipairs(sorted) do
-        table.insert(out, string.format("@D%s: @w%s @R[@w%d%%@R]", d.n, commas(d.v), math.floor((d.v/total)*100)))
+    local other_damage = 0
+    local max_items = 5
+
+    for i, d in ipairs(sorted) do
+        if i <= max_items then
+            table.insert(out, string.format("@D%s: @w%s @R[@w%d%%@R]", d.n, commas(d.v), math.floor((d.v/total)*100)))
+        else
+            other_damage = other_damage + d.v
+        end
+    end
+
+    if other_damage > 0 then
+        table.insert(out, string.format("@DOther: @w%s @R[@w%d%%@R]", commas(other_damage), math.floor((other_damage/total)*100)))
     end
 
     local active_time = total_combat_time
@@ -181,6 +201,7 @@ function commas(num)
     end
     return result
 end
+
 ]]>
 </script>
 </muclient>
