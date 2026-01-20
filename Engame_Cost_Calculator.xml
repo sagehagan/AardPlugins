@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="Endgame_Cost_Calculator"
+   author="Heracles"
+   id="742634891025738491025738"
+   language="Lua"
+   purpose="Calculate Costs for Instinct/Mastery/Potential"
+   save_state="y"
+   date_written="2026-01-20"
+   version="4.3"
+   >
+</plugin>
+
+<aliases>
+  <alias
+   match="^calc (instinct|mastery|potential) (\d+) (\d+)(?: (\w+))?$"
+   enabled="y"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="calculate_progression"
+  >
+  </alias>
+  <alias
+   match="^calc help$"
+   enabled="y"
+   regexp="y"
+   send_to="12"
+   sequence="101"
+   script="show_help"
+  >
+  </alias>
+</aliases>
+
+<script>
+<![CDATA[
+
+local GMCP_HANDLER = "3e7dedbe37e44942dd46d264"
+
+-- ============================================================================
+-- INTERNAL COLOR & ALIGNMENT HELPERS
+-- ============================================================================
+local function col(str)
+    local codes = {
+        ["@w"] = "\27[0m", ["@W"] = "\27[1;37m", ["@G"] = "\27[1;32m",
+        ["@Y"] = "\27[1;33m", ["@C"] = "\27[1;36m", ["@R"] = "\27[1;31m",
+    }
+    return (str:gsub("@.", codes))
+end
+
+local function pad_line(text)
+    local visible_len = string.len(text:gsub("@.", ""))
+    local padding = 50 - visible_len
+    if padding < 0 then padding = 0 end
+    return text .. string.rep(" ", padding)
+end
+
+-- ============================================================================
+-- FORMULA ENGINE
+-- ============================================================================
+local calculator = {
+    mastery = function(level)
+        local qp = 100 + (level - 1) * 20
+        local gold = 2000000 + (level - 1) * 250000
+        return qp, gold, "QP"
+    end,
+    instinct = function(level)
+        local trains = 200 + (level - 1) * 25
+        local gold = 2000000 + (level - 1) * 100000
+        return trains, gold, "Trains"
+    end,
+    potential = function(level)
+        local qp
+        if level <= 151 then qp = 100 + (level - 1) * 25
+        else qp = 3850 + (level - 151) * 50 end
+        return qp, 0, "QP"
+    end
+}
+
+-- ============================================================================
+-- GMCP DATA FETCHING
+-- ============================================================================
+function get_live_stats()
+    local g, t, q = 0, 0, 0
+    local res, gmcparg = CallPlugin(GMCP_HANDLER, "gmcpval", "char.worth")
+    if res == 0 and gmcparg and gmcparg ~= "" then
+        local f = loadstring("return " .. gmcparg)
+        if f then 
+            local data = f()
+            g, t, q = tonumber(data.gold) or 0, tonumber(data.trains) or 0, tonumber(data.qp) or 0
+        end
+    end
+    return t, g, q
+end
+
+-- ============================================================================
+-- MAIN EXECUTION LOGIC
+-- ============================================================================
+function calculate_progression(name, line, wildcards)
+    local system, start_lv, end_lv, channel = wildcards[1]:lower(), tonumber(wildcards[2]), tonumber(wildcards[3]), wildcards[4]
+    local cur_t, cur_g, cur_q = get_live_stats()
+    
+    if start_lv >= end_lv then
+        AnsiNote(col("@R[Error]: Start level must be lower than end level.@w"))
+        return
+    end
+
+    local total_main, total_gold, currency_name = 0, 0, ""
+    for i = (start_lv + 1), end_lv do
+        local main_cost, gold_cost, c_name = calculator[system](i)
+        total_main, total_gold, currency_name = total_main + main_cost, total_gold + gold_cost, c_name
+    end
+
+    print_output(system, start_lv, end_lv, total_main, total_gold, currency_name, cur_t, cur_g, cur_q)
+    
+    if channel and channel ~= "" then
+        report_to_channel(channel, system, start_lv, end_lv, total_main, total_gold, currency_name)
+    end
+end
+
+function format_num(amount)
+    local formatted = tostring(math.floor(amount))
+    while true do  
+        local k
+        formatted, k = string.gsub(formatted, "^(-?%d+)(%d%d%d)", '%1,%2')
+        if (k==0) then break end
+    end
+    return formatted
+end
+
+function print_output(sys, min, max, main, gold, cname, cur_t, cur_g, cur_q)
+    AnsiNote(col("@W.----------------------------------------------------.@w"))
+    AnsiNote(col("@W| @Y" .. pad_line(sys:upper() .. " COST ANALYSIS") .. " @W|@w"))
+    AnsiNote(col("@W|----------------------------------------------------|@w"))
+    AnsiNote(col("@W| @C" .. pad_line("Level Range: " .. min .. " -> " .. max) .. " @W|@w"))
+    AnsiNote(col("@W| @G" .. pad_line("Total " .. cname .. ": " .. format_num(main))  .. " @W|@w"))
+    if gold > 0 then AnsiNote(col("@W| @G" .. pad_line("Total Gold:   " .. format_num(gold)) .. " @W|@w")) end
+    AnsiNote(col("@W|----------------------------------------------------|@w"))
+
+    if sys == "potential" then
+        local rem_qp = math.max(0, main - cur_q)
+        AnsiNote(col("@W| @Y" .. pad_line("Total QP Needed:     " .. format_num(main)) .. " @W|@w"))
+        AnsiNote(col("@W| @Y" .. pad_line("Remaining QP Needed: " .. format_num(rem_qp)) .. " @W|@w"))
+        AnsiNote(col("@W| @w" .. pad_line("(Using: " .. format_num(cur_q) .. " QP)") .. " @W|@w"))
+    elseif sys == "mastery" then
+        local max_p, req_g = math.ceil(gold / 33500), math.max(0, gold - cur_g)
+        local rem_qp, rem_p = math.max(0, main - cur_q), math.ceil(req_g / 33500)
+        AnsiNote(col("@W| @C" .. pad_line("Max Pups (from 0):     " .. format_num(max_p)) .. " @W|@w"))
+        AnsiNote(col("@W| @Y" .. pad_line("Remaining Pups Needed: " .. format_num(rem_p)) .. " @W|@w"))
+        AnsiNote(col("@W| @Y" .. pad_line("Remaining QP Needed:   " .. format_num(rem_qp)) .. " @W|@w"))
+        AnsiNote(col("@W| @w" .. pad_line("(Using: " .. format_num(cur_q) .. " QP / " .. format_num(cur_g) .. " Gold)") .. " @W|@w"))
+    else
+        local max_p = math.ceil(math.max(main / 5, gold / 33500))
+        local req_t, req_g = math.max(0, main - cur_t), math.max(0, gold - cur_g)
+        local rem_p = math.ceil(math.max(req_t / 5, req_g / 33500))
+        AnsiNote(col("@W| @C" .. pad_line("Max Pups (from 0):     " .. format_num(max_p)) .. " @W|@w"))
+        AnsiNote(col("@W| @Y" .. pad_line("Remaining Pups Needed: " .. format_num(rem_p)) .. " @W|@w"))
+        AnsiNote(col("@W| @w" .. pad_line("(Using: " .. format_num(cur_t) .. " Trains / " .. format_num(cur_g) .. " Gold)") .. " @W|@w"))
+    end
+    AnsiNote(col("@W'----------------------------------------------------'@w"))
+end
+
+function report_to_channel(chan, sys, min, max, main, gold, cname)
+    -- Using @ color codes for channel send
+    local msg = string.format("@W[@Y%s @C%d@W-@C%d@W]: Total %s: @G%s", sys:upper(), min, max, cname, format_num(main))
+    if gold > 0 then msg = msg .. " @W| Gold: @G" .. format_num(gold) end
+    if sys ~= "potential" then
+        local max_p = (sys == "mastery") and math.ceil(gold / 33500) or math.ceil(math.max(main / 5, gold / 33500))
+        msg = msg .. " @W| Est. Pups: @Y" .. format_num(max_p)
+    end
+    
+    Execute(chan .. " " .. msg)
+    AnsiNote(col("@GReported stats to @Y" .. chan .. "@w"))
+end
+
+function show_help()
+    AnsiNote(col("@W.----------------------------------------------------.@w"))
+    AnsiNote(col("@W| @Y" .. pad_line("ENDGAME COST CALCULATOR HELP") .. " @W|@w"))
+    AnsiNote(col("@W|----------------------------------------------------|@w"))
+    AnsiNote(col("@W| @w" .. pad_line("Syntax: calc <system> <start> <end> [channel]") .. " @W|@w"))
+    AnsiNote(col("@W|                                                    |@w"))
+    AnsiNote(col("@W| @w" .. pad_line("Examples:") .. " @W|@w"))
+    AnsiNote(col("@W| @G" .. pad_line("  calc instinct 0 100") .. " @W|@w"))
+    AnsiNote(col("@W| @G" .. pad_line("  calc mastery 20 50 gossip") .. " @W|@w"))
+    AnsiNote(col("@W|                                                    |@w"))
+    AnsiNote(col("@W| @w" .. pad_line("Systems: @Cinstinct, mastery, potential") .. " @W|@w"))
+    AnsiNote(col("@W'----------------------------------------------------'@w"))
+end
+
+function OnPluginInstall()
+    AnsiNote(col("@GEndgame_Cost_Calculator v4.3 loaded. Type @Ycalc help@G.@w"))
+end
+
+]]>
+</script>
+</muclient>
