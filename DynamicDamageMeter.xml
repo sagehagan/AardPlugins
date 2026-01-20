@@ -8,9 +8,9 @@
    language="Lua"
    purpose="Personal and Group Damage Tracking"
    save_state="y"
-   date_written="2026-01-18"
+   date_written="2026-01-20"
    requires="5.06"
-   version="5.4"
+   version="5.8"
    >
 </plugin>
 
@@ -33,6 +33,7 @@
 <aliases>
   <alias match="^dmg auto$" enabled="y" regexp="y" script="toggle_meter" />
   <alias match="^dmg reset$" enabled="y" regexp="y" script="DamageStats" />
+  <alias match="^dmg full$" enabled="y" regexp="y" script="full_breakdown" />
   <alias match="^dmg rep (.*?)$" enabled="y" regexp="y" script="report_meter" />
   <alias match="^dmg grep (.*?)$" enabled="y" regexp="y" script="report_group" />
   <alias match="^dmg help$" enabled="y" regexp="y" script="show_help" />
@@ -42,7 +43,7 @@
 <![CDATA[
 local AllTimeDamage = {}
 local GroupDamage = {}
-local valid_group_members = {} -- Stores [Name] = here_status (1 or 0)
+local valid_group_members = {}
 local my_name = GetVariable("my_name") or "Heracles"
 local meter_active = false 
 local total_combat_time = 0
@@ -62,16 +63,21 @@ local melee_types = {
     ["wail"]=true, ["flaming bite"]=true, ["water blast"]=true, ["divine power"]=true
 }
 
-function OnPluginInstall() show_help() end
+function OnPluginInstall() 
+    ColourNote("cyan", "", ">>> ", "white", "", "Dynamic Damage Tracking Loaded. Check ", "yellow", "", "dmg help", "white", "", " for commands.")
+end
 
 function show_help()
     Note("")
-    ColourNote("orange", "", "--- Dynamic Damage Meter v5.4 ---")
-    ColourNote("white", "", "dmg auto    ", "silver", "", "- Toggle tracking On/Off")
-    ColourNote("white", "", "dmg reset   ", "silver", "", "- Wipe ALL data")
-    ColourNote("white", "", "dmg rep     ", "silver", "", "- Personal breakdown (Top 4 + Melee + Other)")
-    ColourNote("white", "", "dmg grep    ", "silver", "", "- Group breakdown (Present Members Only)")
-    ColourNote("orange", "", "---------------------------------")
+    ColourNote("darkorange", "", "==========================================================")
+    ColourNote("yellow", "",     "            DYNAMIC DAMAGE TRACKING v5.8                ")
+    ColourNote("darkorange", "", "==========================================================")
+    ColourNote("white", "", " dmg auto      ", "cyan", "", "- Toggle tracking [Currently: " .. (meter_active and "ON" or "OFF") .. "]")
+    ColourNote("white", "", " dmg full      ", "cyan", "", "- Detailed local breakdown (Wail, Bite, etc)")
+    ColourNote("white", "", " dmg rep [chan]", "cyan", "", "- Public Personal Report (Combat-only DPS)")
+    ColourNote("white", "", " dmg grep [chan]", "cyan", "", "- Public Group Report (Present members only)")
+    ColourNote("white", "", " dmg reset     ", "cyan", "", "- Wipe all data and reset timers")
+    ColourNote("darkorange", "", "==========================================================")
 end
 
 function toggle_meter()
@@ -94,13 +100,12 @@ end
 function dynamic_tracking(name, line, wildcards)
     if line:find("warm feeling") or line:find("fills your body") then return end
     local cleaned_raw = clean_ability(wildcards.ability)
-    local raw_lower = cleaned_raw:lower()
+    local ability_name = cleaned_raw:gsub("^%l", string.upper)
     local dmg = tonumber((string.gsub(wildcards.damage or "0", ",", ""))) or 0
+    
     if dmg > 0 then
-        local ability_name = melee_types[raw_lower] and "Melee" or cleaned_raw:gsub("^%l", string.upper)
         AllTimeDamage[ability_name] = (AllTimeDamage[ability_name] or 0) + dmg
         GroupDamage[my_name] = (GroupDamage[my_name] or 0) + dmg
-        if os_start == 0 then os_start = os.time() end
     end
 end
 
@@ -109,19 +114,45 @@ function group_tracking(name, line, wildcards)
     local dmg = tonumber((string.gsub(wildcards.pdamage or "0", ",", ""))) or 0
     if dmg > 0 then
         GroupDamage[player] = (GroupDamage[player] or 0) + dmg
-        if os_start == 0 then os_start = os.time() end
     end
 end
 
 function round(num) return math.floor(num + 0.5) end
 
+function full_breakdown()
+    local total = 0
+    for _, v in pairs(AllTimeDamage) do total = total + v end
+    if total == 0 then return Note("No damage recorded.") end
+    local sorted = {}
+    for k, v in pairs(AllTimeDamage) do table.insert(sorted, {n=k, v=v}) end
+    table.sort(sorted, function(a,b) return a.v > b.v end)
+    
+    local active_time = total_combat_time
+    if curr_state == "8" and os_start > 0 then active_time = active_time + (os.time() - os_start) end
+
+    Note("")
+    ColourNote("yellow", "", "--- Full Personal Breakdown (Detailed) ---")
+    for _, d in ipairs(sorted) do
+        local is_melee = melee_types[d.n:lower()] and " (Melee)" or ""
+        local perc = round((d.v / total) * 100)
+        ColourNote("white", "", string.format("%-25s", d.n .. is_melee), "silver", "", string.format(": %15s [%d%%]", commas(d.v), perc))
+    end
+    ColourNote("yellow", "", "Total Damage: " .. commas(total) .. " | Combat Time: " .. active_time .. "s")
+    Note("")
+end
+
 function report_meter(name, line, wildcards)
     local rep_chan = wildcards[1] ~= "" and wildcards[1] or "say"
     local total = 0
-    for _, v in pairs(AllTimeDamage) do total = total + v end
+    local bucketed = {}
+    for k, v in pairs(AllTimeDamage) do
+        total = total + v
+        local report_name = melee_types[k:lower()] and "Melee" or k
+        bucketed[report_name] = (bucketed[report_name] or 0) + v
+    end
     if total == 0 then return end
     local sorted = {}
-    for k, v in pairs(AllTimeDamage) do table.insert(sorted, {n=k, v=v}) end
+    for k, v in pairs(bucketed) do table.insert(sorted, {n=k, v=v}) end
     table.sort(sorted, function(a,b) return a.v > b.v end)
     local out = {}
     local other_damage = 0
@@ -135,29 +166,31 @@ function report_meter(name, line, wildcards)
     if other_damage > 0 then
         table.insert(out, string.format("@DOther: @w%s @R[@w%d%%@R]", commas(other_damage), round((other_damage/total)*100)))
     end
-    local active_time = total_combat_time + (os_start > 0 and (os.time() - os_start) or 0)
+    
+    -- DPS Calculation strictly on Combat State time
+    local active_time = total_combat_time
+    local live_tag = ""
+    if curr_state == "8" and os_start > 0 then 
+        active_time = active_time + (os.time() - os_start) 
+        live_tag = " (Live)"
+    end
+    
     local dps = math.floor(total / (active_time > 0 and active_time or 1))
-    Send(rep_chan .. " @R[@DPersonal Report@R] " .. table.concat(out, " ") .. " @DTotal: @w" .. commas(total) .. " @DDPS: @w" .. commas(dps))
+    Send(rep_chan .. " @R[@DPersonal Report@R] " .. table.concat(out, " ") .. " @DTotal: @w" .. commas(total) .. " @DDPS: @w" .. commas(dps) .. live_tag)
 end
 
 function report_group(name, line, wildcards)
     local rep_chan = wildcards[1] ~= "" and wildcards[1] or "say"
-    
     local filtered_data = {}
     local group_total = 0
-    
     for player, dmg in pairs(GroupDamage) do
-        -- Only include if they are 'here' (here == 1) or if it's you
         if valid_group_members[player] == 1 or player == my_name then
             table.insert(filtered_data, {n=player, v=dmg})
             group_total = group_total + dmg
         end
     end
-    
-    if group_total == 0 then return Note("No damage recorded for members present in room.") end
-    
+    if group_total == 0 then return end
     table.sort(filtered_data, function(a,b) return a.v > b.v end)
-    
     local out = {}
     for _, d in ipairs(filtered_data) do
         table.insert(out, string.format("@D%s: @w%s @R[@w%d%%@R]", d.n, commas(d.v), round((d.v/group_total)*100)))
@@ -177,7 +210,6 @@ function OnPluginBroadcast(msg, id, name, text)
             local new_whitelist = {}
             if res and res.members then
                 for _, member in ipairs(res.members) do 
-                    -- Store the 'here' status from info block
                     new_whitelist[member.name] = tonumber(member.info.here) or 0
                 end
             end
@@ -185,13 +217,19 @@ function OnPluginBroadcast(msg, id, name, text)
         elseif text == "char.status" and meter_active then
             local _, pvar = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpval", "char.status")
             local status = loadstring("return " .. pvar)()
-            if status and status.state == "8" and curr_state ~= "8" then
+            local new_state = (status and status.state) or ""
+            
+            -- Enter Combat (State 8)
+            if new_state == "8" and curr_state ~= "8" then
                 os_start = os.time()
-            elseif status and status.state ~= "8" and curr_state == "8" then
-                total_combat_time = total_combat_time + (os.time() - os_start)
-                os_start = 0
+            -- Exit Combat
+            elseif new_state ~= "8" and curr_state == "8" then
+                if os_start > 0 then
+                    total_combat_time = total_combat_time + (os.time() - os_start)
+                    os_start = 0
+                end
             end
-            curr_state = (status and status.state) or ""
+            curr_state = new_state
         end
     end
 end

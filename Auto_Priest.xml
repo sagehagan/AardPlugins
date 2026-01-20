@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+
+<muclient>
+<plugin
+   name="Auto_Priest"
+   author="Heracles"
+   id="b8392f82c892e8a1d1234567"
+   language="Lua"
+   purpose="Automatic Priesting"
+   save_state="y"
+   date_setting="2026-01-20"
+   version="1.5"
+>
+</plugin>
+
+<triggers>
+  <trigger
+   enabled="y"
+   match="^You are still recovering your Smiting abilities \(\d{2}:\d{2}\)\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+  >
+  <send>ExecuteImmediateSmiting()</send>
+  </trigger>
+
+  <trigger enabled="y" match="## You may now use Serenity." send_to="12" sequence="100">
+    <send>HandlePriestSkill("cast 572", "Serenity")</send>
+  </trigger>
+
+  <trigger enabled="y" match="## You may now use shielding abilities." send_to="12" sequence="100">
+    <send>HandlePriestSkill("cast 569", "Shielding")</send>
+  </trigger>
+
+  <trigger enabled="y" match="## You may now use humility." send_to="12" sequence="100">
+    <send>HandlePriestSkill("cast 602", "Humility")</send>
+  </trigger>
+</triggers>
+
+<script>
+<![CDATA[
+-- [2026-01-20] Note: 190 instinct gives 24%.
+-- Per instructions: Do not remove unrelated code when making updates; brevity is not the goal.
+
+local skill_queue = {}
+local in_combat = false
+
+function OnPluginInstall()
+    Note("--------------------------------------------------")
+    Note("Auto_Priest Plugin by Heracles installed.")
+    Note("Logic: Cast immediately if idle, queue if in combat.")
+    Note("--------------------------------------------------")
+end
+
+-- GMCP Listener to track combat state
+function OnPluginBroadcast(msg, id, name, text)
+    if id == "3e7dedbe37e44942dd46d264" or id == "f5b0595ba3fc3850ec608d0e" then
+        if text == "char.status" then
+            local res, gmcparg = CallPlugin(id, "gmcpval", "char.status")
+            if res == 0 and gmcparg then
+                local status_data = {}
+                local luastmt = "status_data = " .. gmcparg
+                local f, err = loadstring(luastmt)
+                if f then 
+                    f() 
+                    
+                    local new_state = tostring(status_data.state or "3")
+                    local enemy = status_data.enemy or ""
+                    
+                    local was_in_combat = in_combat
+                    -- State 8 is combat, State 3 is idle.
+                    in_combat = (new_state == "8" or enemy ~= "")
+
+                    -- Transition: Combat -> Idle
+                    if was_in_combat and not in_combat then
+                        ProcessPriestQueue()
+                    end
+                end
+            end
+        end
+    end
+end
+
+function ExecuteImmediateSmiting()
+    Send("cast 86")
+end
+
+function HandlePriestSkill(command, name)
+    if not in_combat then
+        Send(command)
+        Note("--> [Auto_Priest] Not in combat. Casting " .. name .. " immediately.")
+    else
+        skill_queue[name] = command
+        Note("--> [Auto_Priest] In combat. Queued " .. name .. " for combat end.")
+    end
+end
+
+function ProcessPriestQueue()
+    local found = false
+    for name, cmd in pairs(skill_queue) do
+        Send(cmd)
+        Note("--> [Auto_Priest] Combat ended. Executing: " .. name)
+        found = true
+    end
+    
+    if found then
+        skill_queue = {} 
+    end
+end
+
+function OnPluginEnable()
+    Note("Auto_Priest enabled.")
+end
+
+function OnPluginDisable()
+    Note("Auto_Priest disabled.")
+end
+]]>
+</script>
+</muclient>
