@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+
+<muclient>
+<plugin
+   name="Auto_Totems"
+   author="Heracles"
+   id="deadbeef624123456789abcd"
+   language="Lua"
+   purpose="Automatic Totem Recasting"
+   save_state="y"
+   date_written="2026-01-19"
+   version="1.3"
+   >
+</plugin>
+
+<aliases>
+  <alias
+   match="^autototem$"
+   enabled="y"
+   regexp="y"
+   script="at_toggle"
+   sequence="100"
+  >
+  </alias>
+
+  <alias
+   match="^usetotem (bear|owl|ent)$"
+   enabled="y"
+   regexp="y"
+   script="at_set_selection"
+   sequence="100"
+  >
+  </alias>
+
+  <alias
+   match="^at help$"
+   enabled="y"
+   regexp="y"
+   script="at_help"
+   sequence="100"
+  >
+  </alias>
+</aliases>
+
+<triggers>
+  <trigger
+   enabled="y"
+   match="## Your Totem energy is renewed."
+   script="at_recast_trigger"
+   sequence="100"
+  >
+  </trigger>
+</triggers>
+
+<script>
+<![CDATA[
+local at_enabled = false
+local at_selection = "bear"
+
+function OnPluginInstall()
+    ColourNote("cyan", "", "--------------------------------------------------")
+    ColourNote("white", "", " Auto_Totems by Heracles loaded successfully.")
+    ColourNote("yellow", "", " Type 'at help' to see available commands.")
+    ColourNote("cyan", "", "--------------------------------------------------")
+end
+
+function at_toggle(name, line, wildcards)
+    at_enabled = not at_enabled
+    local status = at_enabled and "ENABLED" or "DISABLED"
+    local color = at_enabled and "lime" or "red"
+    ColourTell("white", "", "[Auto_Totems]: Automation is now ")
+    ColourNote(color, "", status)
+end
+
+function at_set_selection(name, line, wildcards)
+    at_selection = wildcards[1]
+    ColourNote("springgreen", "", "[Auto_Totems]: Selection set to " .. at_selection)
+    Send("cast 624 " .. at_selection)
+end
+
+function at_recast_trigger(name, line, wildcards)
+    if at_enabled then
+        Send("cast 624 " .. at_selection)
+    end
+end
+
+function at_help(name, line, wildcards)
+    local status_text = at_enabled and "ENABLED" or "DISABLED"
+    local status_color = at_enabled and "lime" or "red"
+
+    Note("")
+    ColourNote("cyan", "", "--------------------------------------------------")
+    ColourNote("white", "", " Auto_Totems Help Menu")
+    ColourNote("cyan", "", "--------------------------------------------------")
+    
+    ColourTell("yellow", "", " autototem         ")
+    ColourNote("white", "", "- Toggles auto-recast ON/OFF")
+    
+    ColourTell("yellow", "", " usetotem <type>   ")
+    ColourNote("white", "", "- Set/Cast totem (bear, owl, ent)")
+    
+    ColourTell("yellow", "", " at help           ")
+    ColourNote("white", "", "- Displays this help file")
+    
+    Note("")
+    ColourTell("white", "", " Current Status:   ")
+    ColourNote(status_color, "", status_text)
+    
+    ColourTell("white", "", " Active Totem:     ")
+    ColourNote("cyan", "", at_selection:upper())
+    
+    Note("")
+    ColourNote("gray", "", " Note: Recasts automatically on 'renewal' message.")
+    ColourNote("cyan", "", "--------------------------------------------------")
+    Note("")
+end
+]]>
+</script>
+
+</muclient>
