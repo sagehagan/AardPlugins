@@ -7,18 +7,17 @@
     author="Heracles" 
     id="54375a7029e6eebe04960408" 
     language="Lua" 
-    purpose="GMCP Auto Caster - V41 Help Alignment" 
+    purpose="GMCP Auto Caster - V46" 
     save_state="y" 
-    version="41.0">
+    version="46.0">
   </plugin>
 
   <triggers>
-    <trigger enabled="y" match="^Your * unaffected*$" regexp="y" script="ImmunityTrigger" sequence="100" />
+    <trigger enabled="y" match="^.*unaffected by your .*$" regexp="y" script="ImmunityTrigger" sequence="100" />
   </triggers>
 
   <aliases>
-    <alias match="^acalt +(?&lt;skill&gt;.+?) +(?&lt;pri&gt;\S+) +(?&lt;alt&gt;\S+)$" enabled="y" regexp="y" script="AliasHandler" sequence="10" />
-    <alias match="^acalt +clear$" enabled="y" regexp="y" script="AliasHandler" sequence="9" />
+    <alias match="^acalt +(?&lt;args&gt;.+)$" enabled="y" regexp="y" script="AliasHandler" sequence="10" />
     <alias match="^acopen(?: +(?&lt;cmd&gt;.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acheal(?: +(?&lt;cmd&gt;.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acconsume$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
@@ -90,28 +89,29 @@
 
     function ImmunityTrigger(name, line, wildcards)
         if not Caster.is_fighting or Caster.temp_disable then return end
+        if Caster.cfg.pri_key == "none" then return end
+
         local text = line:lower()
 
-        if Caster.cfg.pri_key == "" then
-            Caster.warn("YOUR spell was UNAFFECTED! Universal Shutdown.")
-            Caster.temp_disable = true
-            return
-        end
-
-        if not Caster.using_alt then
+        if not Caster.using_alt and Caster.cfg.pri_key ~= "" then
             if text:find(Caster.cfg.pri_key:lower()) then
                 if Caster.cfg.alt ~= "" then
-                    Caster.warn("PRIMARY [" .. Caster.cfg.pri_key .. "] IMMUNE! Swapping to Alt.")
+                    Caster.warn("PRIMARY [" .. Caster.cfg.pri_key .. "] IMMUNE! Swapping to Alt Skill.")
                     Caster.using_alt = true
                     last_cast_time = 0 
                 else
-                    Caster.warn("PRIMARY [" .. Caster.cfg.pri_key .. "] IMMUNE! No Alt: Shutdown.")
+                    Caster.warn("PRIMARY [" .. Caster.cfg.pri_key .. "] IMMUNE! Shutdown.")
                     Caster.temp_disable = true
                 end
+                return
             end
-        elseif Caster.cfg.alt_key ~= "" and text:find(Caster.cfg.alt_key:lower()) then
-            Caster.warn("ALT [" .. Caster.cfg.alt_key .. "] IMMUNE! Full Shutdown.")
-            Caster.temp_disable = true
+        end
+
+        if Caster.using_alt and Caster.cfg.alt_key ~= "" then
+            if text:find(Caster.cfg.alt_key:lower()) then
+                Caster.warn("ALT [" .. Caster.cfg.alt_key .. "] IMMUNE! Full Shutdown.")
+                Caster.temp_disable = true
+            end
         end
     end
 
@@ -171,16 +171,24 @@
     function AliasHandler(name, line, wildcards)
         local cmd = line:lower()
 
-        if cmd == "acalt clear" then
-            Caster.cfg.alt = ""; Caster.cfg.pri_key = ""; Caster.cfg.alt_key = ""
-            SetVariable("alt", ""); SetVariable("pri_key", ""); SetVariable("alt_key", "")
-            Caster.log("Alt Skill and Keywords CLEARED. Universal Shutdown.", "lime")
-        elseif cmd:find("^acalt") then
-            if wildcards.skill and wildcards.pri and wildcards.alt then
-                Caster.cfg.alt = wildcards.skill; Caster.cfg.pri_key = wildcards.pri; Caster.cfg.alt_key = wildcards.alt
-                SetVariable("alt", wildcards.skill); SetVariable("pri_key", wildcards.pri); SetVariable("alt_key", wildcards.alt)
-                Caster.log("Alt Configured: Use '" .. wildcards.skill .. "' if '" .. wildcards.pri .. "' is immune.", "orange")
+        if cmd:find("^acalt") then
+            local args = {}
+            for word in wildcards.args:gmatch("%S+") do table.insert(args, word) end
+            
+            if args[1] == "none" then
+                Caster.cfg.pri_key = "none"; Caster.cfg.alt_key = ""; Caster.cfg.alt = ""
+                Caster.log("Immunity Tracking: DISABLED", "lime")
+            elseif #args == 1 then
+                Caster.cfg.pri_key = args[1]; Caster.cfg.alt_key = ""; Caster.cfg.alt = ""
+                Caster.log("Immunity Tracking: SHUTDOWN on [" .. args[1] .. "].", "orange")
+            elseif #args >= 3 then
+                Caster.cfg.pri_key = args[1]; Caster.cfg.alt_key = args[2]
+                local skill_parts = {}
+                for i = 3, #args do table.insert(skill_parts, args[i]) end
+                Caster.cfg.alt = table.concat(skill_parts, " ")
+                Caster.log("Immunity Tracking: [" .. args[1] .. "] -> Swap to [" .. Caster.cfg.alt .. "] -> Shutdown on [" .. args[2] .. "].", "cyan")
             end
+            SetVariable("pri_key", Caster.cfg.pri_key); SetVariable("alt_key", Caster.cfg.alt_key); SetVariable("alt", Caster.cfg.alt)
         elseif cmd:find("^acopen") then
             local val = wildcards.cmd or ""
             if val == "" then Caster.cfg.opener_on = not Caster.cfg.opener_on
@@ -215,22 +223,17 @@
         ColourNote("cyan", "", " [ CASTER SYSTEM STATUS ] ")
         Note("")
         local s, sc = onoff(Caster.enabled)
-        ColourTell("silver", "", " System Power:   ") ColourNote(sc, "", s)
-        ColourTell("silver", "", " Primary Skill:  ") ColourNote("yellow", "", Caster.cfg.primary)
-        ColourTell("silver", "", " Alt Skill:      ") ColourTell("orange", "", Caster.cfg.alt)
-        ColourNote("gray", "", " (Triggers: [" .. Caster.cfg.pri_key .. "] -> [" .. Caster.cfg.alt_key .. "])")
+        ColourTell("silver", "", " System Power:      ") ColourNote(sc, "", s)
+        ColourTell("silver", "", " Primary Skill:     ") ColourNote("yellow", "", Caster.cfg.primary)
+        ColourTell("silver", "", " Alt Skill:         ") ColourNote("orange", "", Caster.cfg.alt ~= "" and Caster.cfg.alt or "None")
+        ColourTell("silver", "", " Immunity Triggers: ") ColourNote("gray", "", "[" .. Caster.cfg.pri_key .. "] -> [" .. Caster.cfg.alt_key .. "]")
         Note("")
         local op, opc = onoff(Caster.cfg.opener_on); local he, hec = onoff(Caster.cfg.heal_on)
-        ColourTell("silver", "", " Opener (Start): ") ColourTell(opc, "", op) ColourNote("gray", "", " [" .. Caster.cfg.opener .. "]")
-        ColourTell("silver", "", " Heal (End):     ") ColourTell(hec, "", he) ColourNote("gray", "", " [" .. Caster.cfg.heal .. "]")
+        ColourTell("silver", "", " Opener (Start):    ") ColourTell(opc, "", op) ColourNote("gray", "", " [" .. Caster.cfg.opener .. "]")
+        ColourTell("silver", "", " Heal (End):        ") ColourTell(hec, "", he) ColourNote("gray", "", " [" .. Caster.cfg.heal .. "]")
         Note("")
         local qu, quc = onoff(Caster.cfg.quaff_on)
-        ColourTell("silver", "", " Auto-Quaff:     ") ColourNote(quc, "", qu)
-        for _, k in ipairs({"hp", "mn", "mv"}) do
-            local v = Caster.vitals[k]
-            ColourTell("silver", "", string.format("  %-3s Threshold: ", k:upper()))
-            ColourNote("lime", "", v.pct .. "% (x" .. v.cnt .. ")")
-        end
+        ColourTell("silver", "", " Auto-Quaff:        ") ColourNote(quc, "", qu)
         ColourNote("silver", "", "--------------------------------------------------")
     end
 
@@ -239,8 +242,9 @@
         ColourNote("cyan", "", " [ AUTO-CASTER GMCP HELP ] ")
         Note("")
         ColourTell("yellow", "", " ac <skill>           ") ColourNote("silver", "", "   - Set primary attack loop.")
-        ColourTell("orange", "", " acalt <sk> <p> <a>   ") ColourNote("silver", "", "   - Set alt skill and damage keywords.")
-        ColourTell("orange", "", " acalt clear          ") ColourNote("silver", "", "   - Wipe alt settings (Universal Shutdown).")
+        ColourTell("orange", "", " acalt none           ") ColourNote("silver", "", "   - Disable all immunity shutdowns.")
+        ColourTell("orange", "", " acalt <trig1>        ") ColourNote("silver", "", "   - Shutdown if trig1 is unaffected.")
+        ColourTell("orange", "", " acalt <t1> <t2> <sk> ") ColourNote("silver", "", "   - Fallback to <sk> on t1, shutdown on t2.")
         ColourTell("yellow", "", " ac                   ") ColourNote("silver", "", "   - Toggle main system power.")
         Note("")
         ColourTell("lime", "", " acopen <skill>       ") ColourNote("silver", "", "   - Fires ONCE at start of combat.")
@@ -253,7 +257,7 @@
         Note("")
         ColourTell("orange", "", " acquaff <t> <%> <c>  ") Note("")
         ColourTell("silver", "", "   Type <t>: hp | mn | mv")
-        ColourTell("silver", "", "   Example:  acquaff hp 40 3 (Quaff 3x at 40% HP)")
+        ColourNote("gray", "", "   Example: acquaff hp 40 3 (Quaff 3x at 40% HP)")
         Note("")
         ColourTell("orange", "", " acquaff              ") ColourNote("silver", "", "   - Toggle auto-potions.")
         Note("")
@@ -261,17 +265,14 @@
         ColourNote("red", "", " Ensure 'dinv consume big mana' (etc) is configured.")
         Note("")
         ColourNote("cyan", "", " IMMUNITY FALLBACK LOGIC:")
-        ColourTell("silver", "", " Use: ") ColourNote("yellow", "", "acalt <alt_skill> <primary_key> <alt_key>")
+        Note(" 1. System monitors lines containing 'unaffected by your'.")
+        Note(" 2. If acalt is 'none', system never stops for immunity.")
+        Note(" 3. If trig2/alt skill are provided, it swaps skills once.")
         Note("")
-        Note(" 1. Primary Keyword: Match the first word of your primary damage.")
-        Note(" 2. Alt Keyword: Match the first word of your alternate damage.")
+        ColourNote("gray", "", " Example: acalt fury neural cast 360")
+        Note(" -> If Your 'fury' is unaffected: Swaps to 'cast 360'.")
+        Note(" -> If Your 'neural' is unaffected: Shutdown.")
         Note("")
-        ColourNote("gray", "", " Example: acalt cast 360 fury neural")
-        Note(" -> If 'fury' (Primary) is UNAFFECTED: Swaps to 'cast 360'.")
-        Note(" -> If 'neural' (Alt) is UNAFFECTED: Shutdown until combat ends.")
-        Note("")
-        ColourNote("red", "", " System ONLY triggers on lines starting with 'Your'.")
-        ColourNote("red", "", " If NO acalt is configured: ANY 'Your ... unaffected' shuts down.")
         ColourNote("red", "", " Fallback chains from Primary -> Alt -> Lockdown.")
         ColourNote("silver", "", "--------------------------------------------------")
     end
@@ -285,20 +286,27 @@
             local status = parse_gmcp("char.status")
             if not status then return end
             local fighting = (status.state == "8")
-            if fighting and not Caster.is_fighting then
-                if Caster.cfg.opener_on and Caster.cfg.opener ~= "" then Execute(Caster.cfg.opener) end
-                last_cast_time = 0
+            
+            if fighting and not Caster.is_fighting and Caster.enabled then
+                if Caster.cfg.opener_on and Caster.cfg.opener ~= "" then
+                    Execute(Caster.cfg.opener)
+                    last_cast_time = os.clock()
+                elseif Caster.cfg.primary ~= "" then
+                    Execute(Caster.cfg.primary)
+                    last_cast_time = os.clock()
+                end
             elseif not fighting and Caster.is_fighting then
                 if Caster.cfg.heal_on and Caster.cfg.heal ~= "" then Execute(Caster.cfg.heal) end
                 if Caster.cfg.consume then Execute("consume") end
                 Caster.using_alt = false; Caster.temp_disable = false; Caster.pause_cast = false
             end
+            
             Caster.is_fighting = fighting
             local base = parse_gmcp("char.base")
             if base then is_navigator = (base.subclass == "Navigator") end
         end
     end
-    Caster.log("V41.0 Loaded. Help file formatting improved.", "lime")
+    Caster.log("Auto Caster V46.0 Loaded. Use Caster Help and Caster Status", "lime")
     ]]>
   </script>
 </muclient>
