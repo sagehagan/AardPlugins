@@ -307,6 +307,12 @@
         end
     end
     Caster.log("Auto Caster V46.0 Loaded. Use Caster Help and Caster Status", "lime")
+
+    -- For other plugins to use your opener logic
+    function get_acopen()
+    -- replace 'config.acopen' with whatever variable holds your opening skill
+    return Caster.cfg.opener or ""
+    end
     ]]>
   </script>
 </muclient>
