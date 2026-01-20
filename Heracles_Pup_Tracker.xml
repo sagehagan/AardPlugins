@@ -1,0 +1,322 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+  name="Heracles_Pup_Tracker"
+  author="Heracles"
+  id="87de24dc0b84faae4729ffb8"
+  language="Lua"
+  purpose="Automatic Pup Tracking"
+  save_state="y"
+  date_written="2026-01-19"
+  requires="5.06"
+  version="8.7"
+  >
+</plugin>
+
+<timers>
+  <timer name="tmPulse" enabled="y" second="1" script="TmrPulse" />
+</timers>
+
+<aliases>
+  <alias match="^pt chan (.+)$" script="tracker_settings" enabled="y" regexp="y" sequence="100" />
+  <alias match="^pt log (.+)$" script="tracker_log_settings" enabled="y" regexp="y" sequence="100" />
+  <alias match="^pt help$" script="pt_help" enabled="y" regexp="y" sequence="100" />
+  <alias match="^pt report$" script="ToggleReport" enabled="y" regexp="y" sequence="100" />
+</aliases>
+
+<triggers>
+  <trigger enabled="y" match="Congratulations, *. You have increased your powerups to *." script="TrgPup" sequence="100" />
+  <trigger enabled="y" match="You gain * trains." name="pupgains" script="TrgPupGains" group="trgLevelInfo" sequence="100" />
+  <trigger enabled="y" regexp="y" match="^Lucky! You gain an extra (\d) training sessions?!$" name="bonusgains" script="TrgPupGains" group="trgLevelInfo" sequence="100" />
+  <trigger enabled="y" regexp="y" match="^You gain (.*) extra(?: trains)? daily blessing bonus.$" name="blessingtrains" script="TrgPupGains" group="trgLevelInfo" sequence="100" />
+  <trigger enabled="y" regexp="y" match="^$" name="trgFinish" script="TrgFinish" sequence="100" />
+  <trigger enabled="y" regexp="y" match="^You get ([\d,]+) gold coins (.+) corpse of (.+)\.$" script="TrgGold" sequence="100" />
+  <trigger enabled="y" regexp="y" match="^.*? crumbles into ([\d,]+) gold pieces\.$" script="TrgGold" sequence="100" />
+  <trigger enabled="y" regexp="y" match="^You receive (\d+)(?:\+(\d+))?(?:\+(\d+))? experience points?\.$" name="trgMobExp" script="TrgExp" sequence="100" />
+</triggers>
+
+<script>
+<![CDATA[
+require "serialize"
+
+local history = {}
+local today_times = {}
+local rep_chan = "print"
+local log_tab = ""
+local t_date = ""
+local t_trains, t_pups, t_gold = 0, 0, 0
+local last_pup_time = 0
+
+local report_active = false
+local report_start_time = 0
+local fiveMinStats = { pups = 0, trains = 0, gold = 0, times = {} }
+
+local color_map = {
+    ["@R"] = "@R", ["@G"] = "@G", ["@B"] = "@B", 
+    ["@Y"] = "@Y", ["@C"] = "@C", ["@W"] = "@W", ["@D"] = "@D"
+}
+
+function OnPluginInstall()
+    t_date = GetVariable("today_date") or os.date("%d %m %Y")
+    t_trains = tonumber(GetVariable("today_trains")) or 0
+    t_pups = tonumber(GetVariable("today_pups")) or 0
+    t_gold = tonumber(GetVariable("today_gold")) or 0
+    rep_chan = GetVariable("repchan") or "print"
+    log_tab = GetVariable("log_tab") or ""
+
+    local h_var = GetVariable("history_table")
+    if h_var and h_var ~= "" then history = loadstring("return " .. h_var)() or {} end
+    
+    -- FORCE RESET for v8.7 to clear the "stuck" 35s data
+    today_times = {} 
+    
+    last_pup_time = GetInfo(304)
+    AnsiNote("@R[ @WHeracles @R] @DPup Tracker v8.7 Loaded. Daily Average Reset for fresh data.")
+    return nil
+end
+
+function StylesToColours(str)
+    return str:gsub("(@[RGBYCW D])", function(code)
+        return color_map[code] or "@W"
+    end)
+end
+
+function AnsiNote(str)
+    local colors = {
+        ["@R"] = "red", ["@G"] = "lime", ["@B"] = "blue", 
+        ["@Y"] = "yellow", ["@C"] = "cyan", ["@W"] = "white", ["@D"] = "gray"
+    }
+    local current = 1
+    while current <= #str do
+        local start, stop, code = str:find("(@[RGBYCW D])", current)
+        if start then
+            if start > current then ColourTell("white", "", str:sub(current, start - 1)) end
+            local next_tag = str:find("@[RGBYCW D]", stop + 1)
+            local seg_end = (next_tag and next_tag - 1) or #str
+            ColourTell(colors[code] or "white", "", str:sub(stop + 1, seg_end))
+            current = seg_end + 1
+        else
+            ColourTell("white", "", str:sub(current))
+            break
+        end
+    end
+    Note("")
+    return nil
+end
+
+local newPup = { trains = 0, bonus = 0, kills = 0, gold = 0 }
+
+function TrgPup(name, line, w)
+    newPup.finishTime = GetInfo(304)
+    EnableTriggerGroup("trgLevelInfo", true)
+    EnableTrigger("trgFinish", true)
+    return nil
+end
+
+function TrgPupGains(name, line, w)
+    local amt = tonumber(w[1]) or 0
+    if name == "pupgains" then newPup.trains = amt else newPup.bonus = newPup.bonus + amt end
+    return nil
+end
+
+function TrgGold(name, line, w)
+    local g = tonumber((string.gsub(w[1], ",", ""))) or 0
+    newPup.gold = (newPup.gold or 0) + g
+    t_gold = (t_gold or 0) + g
+    if report_active then fiveMinStats.gold = fiveMinStats.gold + g end
+    return nil
+end
+
+function TrgExp(name, line, w)
+    newPup.kills = (newPup.kills or 0) + 1
+    return nil
+end
+
+function TrgFinish(name, line, w)
+    if (newPup.trains or 0) > 0 then
+        EnableTriggerGroup("trgLevelInfo", false)
+        EnableTrigger("trgFinish", false)
+        
+        local pTime = math.max(0, newPup.finishTime - last_pup_time)
+        local totalTrains = newPup.trains + newPup.bonus
+        
+        -- Cap time at 10 minutes to prevent AFK skewing the total average
+        local statsTime = math.min(pTime, 600)
+        
+        table.insert(history, statsTime)
+        if #history > 10 then table.remove(history, 1) end
+        
+        table.insert(today_times, statsTime)
+        
+        if report_active then
+            table.insert(fiveMinStats.times, statsTime)
+            fiveMinStats.pups = fiveMinStats.pups + 1
+            fiveMinStats.trains = fiveMinStats.trains + totalTrains
+        end
+        
+        t_pups = t_pups + 1
+        t_trains = t_trains + totalTrains
+        
+        BroadcastPup(pTime, totalTrains)
+        
+        last_pup_time = GetInfo(304)
+        newPup = { trains = 0, bonus = 0, kills = 0, gold = 0 }
+        SaveState()
+    end
+    return nil
+end
+
+function ToggleReport(name, line, wildcards)
+    if not report_active then
+        fiveMinStats = { pups = 0, trains = 0, gold = 0, times = {} }
+        report_start_time = os.time()
+        report_active = true
+        AnsiNote("@R[ @WHeracles @R] @G5-Min Report: @WSTARTED@D.")
+    else
+        report_active = false
+        AnsiNote("@R[ @WHeracles @R] @G5-Min Report: @RCANCELED@D.")
+    end
+    return nil
+end
+
+function TmrPulse(name)
+    local currDate = os.date("%d %m %Y")
+    if t_date ~= currDate then
+        t_date, t_trains, t_pups, t_gold = currDate, 0, 0, 0
+        history, today_times = {}, {}
+        SaveState()
+    end
+    if report_active and os.time() - report_start_time >= 300 then
+        ExecuteReport()
+    end
+    return nil
+end
+
+function ExecuteReport()
+    local sum = 0
+    for _, v in ipairs(fiveMinStats.times) do sum = sum + v end
+    local avg = (#fiveMinStats.times > 0) and (sum / #fiveMinStats.times) or 0
+    
+    local color_body = string.format("@R[@W5-MIN SUMMARY@R] @DPups: @W%d @R| @DTrains: @W%d @R| @DGold: @Y%s @R| @DAvg: @W%ds", 
+                       fiveMinStats.pups, fiveMinStats.trains, FormatGold(fiveMinStats.gold), math.floor(avg))
+    
+    local raw_body = string.format("[5-MIN SUMMARY] Pups: %d | Trains: %d | Gold: %s | Avg: %ds", 
+                     fiveMinStats.pups, fiveMinStats.trains, FormatGold(fiveMinStats.gold), math.floor(avg))
+    
+    if rep_chan == "print" then
+        AnsiNote("@D--------------------------------------------------------------------------------")
+        AnsiNote(color_body)
+        AnsiNote("@D--------------------------------------------------------------------------------")
+    elseif rep_chan ~= "none" then
+        Execute(rep_chan .. " " .. raw_body)
+    end
+    
+    if log_tab ~= "" then 
+       CallPlugin("b555825a4a5700c35fa80780", "storeFromOutside", StylesToColours(color_body), log_tab)
+    end
+
+    fiveMinStats = { pups = 0, trains = 0, gold = 0, times = {} }
+    report_start_time = os.time()
+    return nil
+end
+
+function CommaValue(amount)
+    local formatted = tostring(amount)
+    while true do
+        formatted, k = string.gsub(formatted, "^(-?%d+)(%d%d%d)", '%1,%2')
+        if (k==0) then break end
+    end
+    return formatted
+end
+
+function FormatGold(val)
+    local amount = tonumber(val) or 0
+    if amount >= 1000000 then return string.format("%.2fM", amount / 1000000)
+    elseif amount >= 1000 then return string.format("%.1fK", amount / 1000)
+    else return tostring(amount) end
+end
+
+function FormatSeconds(s)
+    s = math.floor(tonumber(s) or 0)
+    local m = math.floor(s / 60)
+    local sec = s % 60
+    if m > 0 then return m .. "m " .. sec .. "s" end
+    return sec .. "s"
+end
+
+function BroadcastPup(pTime, totalTrains)
+    local s1 = 0; for _,v in ipairs(history) do s1=s1+v end
+    local avg10 = (#history > 0) and (s1/#history) or 0
+    
+    local s2 = 0; for _,v in ipairs(today_times) do s2 = s2 + v end
+    local avgToday = (#today_times > 0) and (s2 / #today_times) or 0
+
+    local raw_msg = string.format("[Pup: %s] [Time: %s] [Avg: %s Today: %s] [Kills: %d] [Trains: %d Today: %s] [Gold: %s Today: %s]",
+                CommaValue(t_pups), FormatSeconds(pTime), FormatSeconds(avg10), FormatSeconds(avgToday), 
+                newPup.kills or 0, totalTrains, CommaValue(t_trains), FormatGold(newPup.gold or 0), FormatGold(t_gold))
+    
+    local color_msg = string.format("@R[@DPup: @W%s@R] [@DTime: @W%s@R] [@DAvg: @W%s @DToday: @W%s@R] [@DKills: @W%d@R] [@DTrains: @W%d @DToday: @W%s@R] [@DGold: @Y%s @DToday: @Y%s@R]", 
+                      CommaValue(t_pups), FormatSeconds(pTime), FormatSeconds(avg10), FormatSeconds(avgToday), 
+                      newPup.kills or 0, totalTrains, CommaValue(t_trains), FormatGold(newPup.gold or 0), FormatGold(t_gold))
+
+    if rep_chan == "print" then
+        AnsiNote(color_msg)
+    elseif rep_chan ~= "none" then
+        Execute(rep_chan .. " " .. raw_msg)
+    end
+    
+    if log_tab ~= "" then 
+        CallPlugin("b555825a4a5700c35fa80780", "storeFromOutside", StylesToColours(color_msg), log_tab)
+    end
+    return nil
+end
+
+function tracker_settings(name, line, wildcards)
+    rep_chan = wildcards[1]
+    SetVariable("repchan", rep_chan)
+    AnsiNote("@R[ @WHeracles @R] @DOutput Channel: @W" .. rep_chan)
+    return nil
+end
+
+function tracker_log_settings(name, line, wildcards)
+    log_tab = wildcards[1]
+    if log_tab == "off" then log_tab = "" end
+    SetVariable("log_tab", log_tab)
+    AnsiNote("@R[ @WHeracles @R] @DLogging to Tab: @W" .. (log_tab == "" and "OFF" or log_tab))
+    return nil
+end
+
+function OnPluginSaveState()
+    SetVariable("today_date", t_date)
+    SetVariable("today_trains", tostring(t_trains))
+    SetVariable("today_pups", tostring(t_pups))
+    SetVariable("today_gold", tostring(t_gold))
+    SetVariable("repchan", rep_chan)
+    SetVariable("log_tab", log_tab)
+    SetVariable("history_table", serialize.save_simple(history))
+    SetVariable("today_times_table", serialize.save_simple(today_times))
+    return nil
+end
+
+function pt_help()
+    AnsiNote(" ")
+    AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote("@W                             HERACLES PUP TRACKER                               ")
+    AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote("  @Cpt report           @D: Starts a 5-minute data collection window.")
+    AnsiNote("  @Cpt chan <channel>   @D: Set output (e.g., @Cgtell@D). Use @Cnone@D for local only.")
+    AnsiNote("  @Cpt log <tab_name>   @D: Sends reports to Fiendish's Comm Log (e.g. @CPups@D).")
+    AnsiNote("  @Cpt log off          @D: Disables tab redirection.")
+    AnsiNote("  @Cpt help             @D: Displays this menu.")
+    AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote("  @WCURRENT SETTINGS:")
+    AnsiNote("  @DOutput Channel: @W" .. rep_chan)
+    AnsiNote("  @DLogging to Tab: @W" .. (log_tab == "" and "OFF" or log_tab))
+    AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote(" ")
+    return nil
+end
+]]>
+</script>
+</muclient>
