@@ -7,48 +7,66 @@
     author="Heracles" 
     id="54375a7029e6eebe04960408" 
     language="Lua" 
-    purpose="GMCP Auto Caster - V46" 
+    purpose="Automatic Spell/Skill Casting" 
     save_state="y" 
-    version="46.0">
+    version="8.1">
   </plugin>
 
   <triggers>
-    <trigger enabled="y" match="^.*unaffected by your .*$" regexp="y" script="ImmunityTrigger" sequence="100" />
+    <trigger 
+      enabled="y" 
+      match="^.*Your (?&lt;keyword&gt;\S+) .+$" 
+      regexp="y" 
+      script="RecastHandler" 
+      sequence="100" 
+    />
+    <trigger 
+      enabled="y" 
+      match="^.* is unaffected by your (?&lt;keyword&gt;[^ .!]+).*$" 
+      regexp="y" 
+      script="ImmunityTrigger" 
+      sequence="90" 
+    />
   </triggers>
 
   <aliases>
-    <alias match="^acalt +(?&lt;args&gt;.+)$" enabled="y" regexp="y" script="AliasHandler" sequence="10" />
+    <alias match="^ac +(?&lt;trig&gt;\S+) +(?&lt;skill&gt;.+)$" enabled="y" regexp="y" script="AliasHandler" sequence="10" />
+    <alias match="^acalt +(?&lt;trig&gt;\S+) +(?&lt;skill&gt;.+)$" enabled="y" regexp="y" script="AliasHandler" sequence="10" />
+    <alias match="^acalt +none$" enabled="y" regexp="y" script="AliasHandler" sequence="9" />
     <alias match="^acopen(?: +(?&lt;cmd&gt;.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acheal(?: +(?&lt;cmd&gt;.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acconsume$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acquaff(?: +(?&lt;type&gt;hp|mn|mv) +(?&lt;pct&gt;\d+) +(?&lt;cnt&gt;\d+))?$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
     <alias match="^acquaff$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
     <alias match="^ac debug$" enabled="y" regexp="y" script="ToggleDebug" sequence="20" />
-    <alias match="^ac(?: +(?&lt;cmd&gt;.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="100" />
+    <alias match="^ac$" enabled="y" regexp="y" script="AliasHandler" sequence="100" />
     <alias match="caster status" enabled="y" ignore_case="y" script="ShowStatus" />
     <alias match="caster help" enabled="y" ignore_case="y" script="ShowHelp" />
   </aliases>
 
   <script>
     <![CDATA[
-    local last_cast_time = 0
-    local is_navigator = false
     local GMCP_ID = "3e7dedbe37e44942dd46d264"
     local debug_mode = (GetVariable("debug_mode") or "0") == "1"
-
+    
     local Caster = {
         enabled      = (GetVariable("enabled") or "1") == "1",
         is_fighting  = false,
         last_quaff   = 0,
+        last_recast_time = 0, 
+        blocked_casts = 0,
         pause_cast   = false,
         using_alt    = false, 
         temp_disable = false, 
+        quaff_override = false,
+        subclass     = "Unknown",
+        recast_speed = 2.0,
         
         cfg = {
             primary      = GetVariable("primary") or "",
             alt          = GetVariable("alt") or "", 
-            pri_key      = GetVariable("pri_key") or "",
-            alt_key      = GetVariable("alt_key") or "",
+            pri_trig     = GetVariable("pri_trig") or "",
+            alt_trig     = GetVariable("alt_trig") or "",
             opener       = GetVariable("opener") or "",
             opener_on    = (GetVariable("opener_on") or "0") == "1",
             heal         = GetVariable("heal") or "",
@@ -73,8 +91,48 @@
         return nil
     end
 
-    function Caster.log(msg, color)
-        ColourNote("red", "", " >>> ", color or "white", "", msg)
+    function Caster.update_subclass()
+        local base = parse_gmcp("char.base")
+        if base and base.subclass then
+            Caster.subclass = base.subclass
+            if Caster.subclass:lower() == "navigator" then
+                Caster.recast_speed = 0.5
+            else
+                Caster.recast_speed = 2.0
+            end
+        end
+    end
+
+    function Caster.log(msg, default_color)
+        local colors = { 
+            ["@R"] = "red", 
+            ["@Y"] = "yellow", 
+            ["@D"] = "silver", 
+            ["@C"] = "cyan",
+            ["@G"] = "lime",
+            ["@M"] = "magenta"
+        }
+        
+        ColourTell("red", "", " >>> ")
+        
+        local current_color = default_color or "white"
+        local last_pos = 1
+        
+        for code, pos in msg:gmatch("(@%u)()") do
+            local text_segment = msg:sub(last_pos, pos - 3)
+            if text_segment ~= "" then
+                ColourTell(current_color, "", text_segment)
+            end
+            current_color = colors[code] or current_color
+            last_pos = pos
+        end
+        
+        local final_segment = msg:sub(last_pos)
+        if final_segment ~= "" then
+            ColourTell(current_color, "", final_segment)
+        end
+        
+        Note("") 
     end
 
     function Caster.warn(msg)
@@ -87,51 +145,74 @@
         Caster.log("Debug Messaging: " .. (debug_mode and "ON" or "OFF"), "cyan")
     end
 
-    function ImmunityTrigger(name, line, wildcards)
-        if not Caster.is_fighting or Caster.temp_disable then return end
-        if Caster.cfg.pri_key == "none" then return end
-
-        local text = line:lower()
-
-        if not Caster.using_alt and Caster.cfg.pri_key ~= "" then
-            if text:find(Caster.cfg.pri_key:lower()) then
-                if Caster.cfg.alt ~= "" then
-                    Caster.warn("PRIMARY [" .. Caster.cfg.pri_key .. "] IMMUNE! Swapping to Alt Skill.")
-                    Caster.using_alt = true
-                    last_cast_time = 0 
-                else
-                    Caster.warn("PRIMARY [" .. Caster.cfg.pri_key .. "] IMMUNE! Shutdown.")
-                    Caster.temp_disable = true
-                end
-                return
+    function Caster.do_cast()
+        if not Caster.enabled or not Caster.is_fighting or Caster.temp_disable then return end
+        
+        if Caster.pause_cast and not Caster.quaff_override then
+            Caster.blocked_casts = Caster.blocked_casts + 1
+            if Caster.blocked_casts >= 3 then
+                Caster.warn("Safety Trigger: 3 Recasts Blocked. Resuming Fire.")
+                Caster.quaff_override = true
+            else
+                return 
             end
         end
 
-        if Caster.using_alt and Caster.cfg.alt_key ~= "" then
-            if text:find(Caster.cfg.alt_key:lower()) then
-                Caster.warn("ALT [" .. Caster.cfg.alt_key .. "] IMMUNE! Full Shutdown.")
-                Caster.temp_disable = true
-            end
+        local skill = Caster.using_alt and Caster.cfg.alt or Caster.cfg.primary
+        if skill ~= "" then
+            Execute(skill)
         end
     end
 
-    function Caster.heartbeat()
-        if not Caster.enabled or not Caster.is_fighting or Caster.pause_cast or Caster.temp_disable then return end
-        local cooldown = is_navigator and 0.25 or 2.1
-        local now = os.clock()
-
-        if (now - last_cast_time) >= cooldown then
-            local skill = Caster.using_alt and Caster.cfg.alt or Caster.cfg.primary
-            if skill ~= "" then
-                Execute(skill)
-                last_cast_time = now 
+    function RecastHandler(name, line, wildcards)
+        if not Caster.is_fighting or not Caster.enabled then return end
+        local word = wildcards.keyword:lower()
+        local active_trig = (Caster.using_alt and Caster.cfg.alt_trig or Caster.cfg.pri_trig):lower()
+        
+        if word == active_trig then
+            local now = os.clock()
+            local elapsed = now - Caster.last_recast_time
+            
+            if elapsed < Caster.recast_speed then
+                if debug_mode then 
+                    Caster.log(string.format("Recast Halted: %.1fs Cooldown (%.1fs left).", Caster.recast_speed, Caster.recast_speed - elapsed), "orange") 
+                end
+                return
             end
+
+            Caster.last_recast_time = now
+            Caster.do_cast()
+        end
+    end
+
+    function ImmunityTrigger(name, line, wildcards)
+        if not Caster.is_fighting or Caster.temp_disable then return end
+        local resisted_skill = wildcards.keyword:lower()
+
+        if not Caster.using_alt and resisted_skill == Caster.cfg.pri_trig:lower() then
+            if Caster.cfg.alt ~= "" then
+                Caster.warn("PRIMARY IMMUNE (" .. resisted_skill .. ")! Swapping to Alt.")
+                Caster.using_alt = true
+                Caster.last_recast_time = 0 
+                Caster.do_cast()
+            else
+                Caster.warn("PRIMARY IMMUNE (" .. resisted_skill .. ")! No Alt set. Shutting down.")
+                Caster.temp_disable = true
+            end
+        elseif Caster.using_alt and resisted_skill == Caster.cfg.alt_trig:lower() then
+            Caster.warn("ALTERNATE IMMUNE (" .. resisted_skill .. ")! Emergency Shutdown.")
+            Caster.temp_disable = true
         end
     end
 
     function Caster.check_vitals()
         local now = os.clock()
-        if Caster.pause_cast and (now - Caster.last_quaff) > 3 then Caster.pause_cast = false end
+        
+        if Caster.pause_cast and (now - Caster.last_quaff) > 3 then 
+            Caster.pause_cast = false 
+            Caster.do_cast()
+        end
+
         if not Caster.cfg.quaff_on or not Caster.enabled or not Caster.is_fighting then return end
         if (now - Caster.last_quaff) < 3 then return end
 
@@ -141,9 +222,9 @@
 
         for _, k in ipairs({"hp", "mn", "mv"}) do
             local d = Caster.vitals[k]
-            local cur, max = tonumber(current_vitals[d.key]), tonumber(max_vitals[d.max_key])
+            local cur, max = tonumber(current_vitals[d.key]), tonumber(max_vitals[d.max_key] or max_vitals["max"..d.key])
             if cur and max and (cur/max*100) < d.pct then
-                Caster.log("Low " .. k:upper() .. "! Quaffing " .. d.cnt .. "x " .. d.item, "yellow")
+                Caster.log("Low " .. k:upper() .. "! Delaying recast 3s.", "yellow")
                 Caster.pause_cast = true
                 for i = 1, d.cnt do Execute("dinv consume " .. d.item) end
                 Caster.last_quaff = now
@@ -162,7 +243,7 @@
             if Caster.vitals[t] then
                 Caster.vitals[t].pct, Caster.vitals[t].cnt = pct, cnt
                 SetVariable(t .. "_pct", tostring(pct)); SetVariable(t .. "_cnt", tostring(cnt))
-                Caster.log(t:upper() .. " quaff set to " .. pct .. "% (Repeat " .. cnt .. "x)", "cyan")
+                Caster.log(t:upper() .. " monitoring set to " .. pct .. "% (" .. cnt .. "x)", "cyan")
             end
         end
         SaveState()
@@ -171,148 +252,159 @@
     function AliasHandler(name, line, wildcards)
         local cmd = line:lower()
 
-        if cmd:find("^acalt") then
-            local args = {}
-            for word in wildcards.args:gmatch("%S+") do table.insert(args, word) end
-            
-            if args[1] == "none" then
-                Caster.cfg.pri_key = "none"; Caster.cfg.alt_key = ""; Caster.cfg.alt = ""
-                Caster.log("Immunity Tracking: DISABLED", "lime")
-            elseif #args == 1 then
-                Caster.cfg.pri_key = args[1]; Caster.cfg.alt_key = ""; Caster.cfg.alt = ""
-                Caster.log("Immunity Tracking: SHUTDOWN on [" .. args[1] .. "].", "orange")
-            elseif #args >= 3 then
-                Caster.cfg.pri_key = args[1]; Caster.cfg.alt_key = args[2]
-                local skill_parts = {}
-                for i = 3, #args do table.insert(skill_parts, args[i]) end
-                Caster.cfg.alt = table.concat(skill_parts, " ")
-                Caster.log("Immunity Tracking: [" .. args[1] .. "] -> Swap to [" .. Caster.cfg.alt .. "] -> Shutdown on [" .. args[2] .. "].", "cyan")
-            end
-            SetVariable("pri_key", Caster.cfg.pri_key); SetVariable("alt_key", Caster.cfg.alt_key); SetVariable("alt", Caster.cfg.alt)
+        if cmd:find("^acalt none") then
+            Caster.cfg.alt = ""; Caster.cfg.alt_trig = ""
+            SetVariable("alt", ""); SetVariable("alt_trig", "")
+            Caster.log("Alternate settings cleared.", "lime")
+        elseif cmd:find("^acalt") then
+            Caster.cfg.alt_trig = wildcards.trig; Caster.cfg.alt = wildcards.skill
+            SetVariable("alt_trig", wildcards.trig); SetVariable("alt", wildcards.skill)
+            Caster.log("ALT SET: Trigger [" .. wildcards.trig .. "] -> Skill [" .. wildcards.skill .. "]", "orange")
+        elseif cmd:find("^ac +") then
+            Caster.cfg.pri_trig = wildcards.trig; Caster.cfg.primary = wildcards.skill
+            SetVariable("pri_trig", wildcards.trig); SetVariable("primary", wildcards.skill)
+            Caster.log("PRIMARY SET: Trigger [" .. wildcards.trig .. "] -> Skill [" .. wildcards.skill .. "]", "cyan")
+        elseif cmd == "ac" then
+            Caster.enabled = not Caster.enabled; SetVariable("enabled", Caster.enabled and "1" or "0")
+            Caster.log("Caster Power: " .. (Caster.enabled and "ON" or "OFF"), Caster.enabled and "lime" or "red")
         elseif cmd:find("^acopen") then
             local val = wildcards.cmd or ""
             if val == "" then Caster.cfg.opener_on = not Caster.cfg.opener_on
             else Caster.cfg.opener = val; Caster.cfg.opener_on = true; SetVariable("opener", val) end
             SetVariable("opener_on", Caster.cfg.opener_on and "1" or "0")
-            Caster.log("Opener: " .. (Caster.cfg.opener_on and "ON" or "OFF"), Caster.cfg.opener_on and "lime" or "red")
+            Caster.log("Opener " .. (Caster.cfg.opener_on and "Enabled" or "Disabled"))
         elseif cmd:find("^acheal") then
             local val = wildcards.cmd or ""
             if val == "" then Caster.cfg.heal_on = not Caster.cfg.heal_on
             else Caster.cfg.heal = val; Caster.cfg.heal_on = true; SetVariable("heal", val) end
             SetVariable("heal_on", Caster.cfg.heal_on and "1" or "0")
-            Caster.log("Recovery: " .. (Caster.cfg.heal_on and "ON" or "OFF"), Caster.cfg.heal_on and "lime" or "red")
+            Caster.log("Recovery " .. (Caster.cfg.heal_on and "Enabled" or "Disabled"))
         elseif cmd:find("^acconsume") then
             Caster.cfg.consume = not Caster.cfg.consume; SetVariable("consume", Caster.cfg.consume and "1" or "0")
-            Caster.log("Post-combat 'consume': " .. (Caster.cfg.consume and "ON" or "OFF"))
-        else
-            local val = wildcards.cmd or ""
-            if val == "" then
-                Caster.enabled = not Caster.enabled; SetVariable("enabled", Caster.enabled and "1" or "0")
-                Caster.log("Caster System: " .. (Caster.enabled and "ON" or "OFF"), Caster.enabled and "lime" or "red")
-            else
-                Caster.cfg.primary = val; SetVariable("primary", val)
-                Caster.log("Primary set to: " .. val, "cyan")
-            end
+            Caster.log("Combat Consume: " .. (Caster.cfg.consume and "ON" or "OFF"))
         end
         SaveState()
     end
 
     function ShowStatus(name, line, wildcards)
-        local function onoff(b) return b and "ON" or "OFF", b and "lime" or "red" end
-        ColourNote("silver", "", "--------------------------------------------------")
-        ColourNote("cyan", "", " [ CASTER SYSTEM STATUS ] ")
+        Caster.update_subclass()
+        local function status_tag(b) return b and "[ ACTIVE ]" or "[ INACTIVE ]", b and "lime" or "red" end
+        local function val_tag(v) return v ~= "" and v or "Not Set", v ~= "" and "yellow" or "gray" end
+
+        ColourNote("silver", "", "======================================================================")
+        ColourTell("cyan", "", " [ CASTER SYSTEM v8.1 ]") 
+        local p, pc = status_tag(Caster.enabled)
+        ColourTell("silver", "", " Status: ") ColourNote(pc, "", p)
+        
+        ColourTell("silver", "", "   Class Info:    ") 
+        ColourTell("magenta", "", string.format("%-14s", Caster.subclass))
+        ColourNote("silver", "", "Recast Speed: " .. Caster.recast_speed .. "s")
         Note("")
-        local s, sc = onoff(Caster.enabled)
-        ColourTell("silver", "", " System Power:      ") ColourNote(sc, "", s)
-        ColourTell("silver", "", " Primary Skill:     ") ColourNote("yellow", "", Caster.cfg.primary)
-        ColourTell("silver", "", " Alt Skill:         ") ColourNote("orange", "", Caster.cfg.alt ~= "" and Caster.cfg.alt or "None")
-        ColourTell("silver", "", " Immunity Triggers: ") ColourNote("gray", "", "[" .. Caster.cfg.pri_key .. "] -> [" .. Caster.cfg.alt_key .. "]")
+        
+        ColourNote("silver", "", " COMMANDS & TRIGGERS")
+        local p_val, p_col = val_tag(Caster.cfg.primary)
+        ColourTell("silver", "", "   Primary Loop:  ") ColourTell("cyan", "", string.format("%-12s", "  [" .. Caster.cfg.pri_trig .. "]")) 
+        ColourNote(p_col, "", " -> " .. p_val)
+        
+        local a_val, a_col = val_tag(Caster.cfg.alt)
+        ColourTell("silver", "", "   Alternate Loop:") ColourTell("orange", "", string.format("%-12s", "  [" .. Caster.cfg.alt_trig .. "]")) 
+        ColourNote(a_col, "", " -> " .. a_val)
         Note("")
-        local op, opc = onoff(Caster.cfg.opener_on); local he, hec = onoff(Caster.cfg.heal_on)
-        ColourTell("silver", "", " Opener (Start):    ") ColourTell(opc, "", op) ColourNote("gray", "", " [" .. Caster.cfg.opener .. "]")
-        ColourTell("silver", "", " Heal (End):        ") ColourTell(hec, "", he) ColourNote("gray", "", " [" .. Caster.cfg.heal .. "]")
+
+        ColourNote("silver", "", " COMBAT SEQUENCE")
+        local op, opc = status_tag(Caster.cfg.opener_on)
+        ColourTell("silver", "", "   Opener:          ") ColourTell(opc, "", string.format("%-14s", op)) ColourNote("gray", "", "Cmd: " .. (Caster.cfg.opener ~= "" and Caster.cfg.opener or "None"))
+        
+        local he, hec = status_tag(Caster.cfg.heal_on)
+        ColourTell("silver", "", "   Recovery:        ") ColourTell(hec, "", string.format("%-14s", he)) ColourNote("gray", "", "Cmd: " .. (Caster.cfg.heal ~= "" and Caster.cfg.heal or "None"))
+        
+        local co, coc = status_tag(Caster.cfg.consume)
+        ColourTell("silver", "", "   Consume:         ") ColourNote(coc, "", co)
         Note("")
-        local qu, quc = onoff(Caster.cfg.quaff_on)
-        ColourTell("silver", "", " Auto-Quaff:        ") ColourNote(quc, "", qu)
-        ColourNote("silver", "", "--------------------------------------------------")
+
+        ColourNote("silver", "", " VITAL MONITORING (AUTO-QUAFF)")
+        local qu, quc = status_tag(Caster.cfg.quaff_on)
+        ColourTell("silver", "", "   Power:           ") ColourNote(quc, "", qu)
+        ColourTell("silver", "", "   Thresholds:      ")
+        ColourTell("lime", "", "HP: " .. Caster.vitals.hp.pct .. "% (" .. Caster.vitals.hp.cnt .. "x)  ")
+        ColourTell("cyan", "", "MN: " .. Caster.vitals.mn.pct .. "% (" .. Caster.vitals.mn.cnt .. "x)  ")
+        ColourNote("orange", "", "MV: " .. Caster.vitals.mv.pct .. "% (" .. Caster.vitals.mv.cnt .. "x)")
+        ColourNote("silver", "", "======================================================================")
     end
 
     function ShowHelp(name, line, wildcards)
-        ColourNote("silver", "", "--------------------------------------------------")
-        ColourNote("cyan", "", " [ AUTO-CASTER GMCP HELP ] ")
+        ColourNote("silver", "", "----------------------------------------------------------------------")
+        ColourNote("cyan", "", " [ AUTO-CASTER COMMAND REFERENCE ]")
         Note("")
-        ColourTell("yellow", "", " ac <skill>           ") ColourNote("silver", "", "   - Set primary attack loop.")
-        ColourTell("orange", "", " acalt none           ") ColourNote("silver", "", "   - Disable all immunity shutdowns.")
-        ColourTell("orange", "", " acalt <trig1>        ") ColourNote("silver", "", "   - Shutdown if trig1 is unaffected.")
-        ColourTell("orange", "", " acalt <t1> <t2> <sk> ") ColourNote("silver", "", "   - Fallback to <sk> on t1, shutdown on t2.")
-        ColourTell("yellow", "", " ac                   ") ColourNote("silver", "", "   - Toggle main system power.")
+        ColourTell("yellow", "", " ac <trig> <skill>    ") ColourNote("silver", "", "Set primary recast trigger and command.")
+        ColourTell("orange", "", " acalt <trig> <skill> ") ColourNote("silver", "", "Set fallback trigger/command for immunity.")
+        ColourTell("orange", "", " acalt none           ") ColourNote("silver", "", "Clear the alternate fallback loop.")
+        ColourTell("yellow", "", " ac                   ") ColourNote("silver", "", "Toggle main plugin power.")
         Note("")
-        ColourTell("lime", "", " acopen <skill>       ") ColourNote("silver", "", "   - Fires ONCE at start of combat.")
-        ColourNote("gray", "", "   Example: acopen cast 8 (Casts spell 8 on combat start)")
+        ColourTell("lime", "", " acopen <skill>       ") ColourNote("silver", "", "Toggle/Set skill fired at combat start.")
+        ColourTell("lime", "", " acheal <skill>       ") ColourNote("silver", "", "Toggle/Set skill fired at combat end.")
+        ColourTell("lime", "", " acconsume            ") ColourNote("silver", "", "Toggle post-combat 'consume' command.")
         Note("")
-        ColourTell("lime", "", " acheal <skill>       ") ColourNote("silver", "", "   - Fires ONCE at end of combat.")
-        ColourNote("gray", "", "   Example: acheal c 106 heracles (exclude target to heal self)")
+        ColourTell("cyan", "", " acquaff <t> <%> <c>  ") ColourNote("silver", "", "Set vital type (hp|mn|mv), %, and repeat.")
+        ColourTell("cyan", "", " acquaff              ") ColourNote("silver", "", "Toggle the Auto-Quaff system.")
         Note("")
-        ColourTell("lime", "", " acconsume            ") ColourNote("silver", "", "   - Toggle 'consume' command after combat.")
+        ColourTell("white", "", " caster status        ") ColourNote("silver", "", "View current settings and vital levels.")
+        ColourTell("white", "", " caster help          ") ColourNote("silver", "", "Display this help menu.")
         Note("")
-        ColourTell("orange", "", " acquaff <t> <%> <c>  ") Note("")
-        ColourTell("silver", "", "   Type <t>: hp | mn | mv")
-        ColourNote("gray", "", "   Example: acquaff hp 40 3 (Quaff 3x at 40% HP)")
+        ColourNote("silver", "", " EXAMPLES:")
+        Note("   ac fury cast 626                 - Matches 'Your fury'")
+        Note("   acalt bone-crunching c 358       - Matches 'Your bone-crunching'")
+        Note("   ac piercing cast 574             - Matches 'Your piercing'")
+        Note("   ac spiraling spiral              - Matches 'Your spiraling'")
+        Note("   acopen cast 574                  - Fires heavenly smiting once at combat start.")
+        Note("   acheal cast 146 Heracles         - Fires regen once at combat end. Remove target to heal self.")
+        Note("   acquaff hp 40 3                  - Quaffs 3 heals when HP falls below 40%.")
         Note("")
-        ColourTell("orange", "", " acquaff              ") ColourNote("silver", "", "   - Toggle auto-potions.")
+        ColourNote("silver", "", " LOGIC & SAFETY:")
+        Note(" 1. START: Fires Opener then immediately fires Primary Skill.")
+        Note(" 2. RECAST: Fires ONLY when damage word (trig) is detected.")
+        Note(" 3. COOLDOWN: 2.0s delay (0.5s for Navigators).")
+        Note(" 4. IMMUNITY: Swaps to Alt or shuts down if unaffected.")
+        Note(" 5. QUAFF: Stops casting for 3s per quaff.")
+        Note(" 6. SHUTDOWN: Re-enables at combat end if disabled by immunity.")
         Note("")
-        ColourNote("red", "", " WARNING: Auto-Quaff REQUIRES Durel's 'dinv' plugin.")
-        ColourNote("red", "", " Ensure 'dinv consume big mana' (etc) is configured.")
-        Note("")
-        ColourNote("cyan", "", " IMMUNITY FALLBACK LOGIC:")
-        Note(" 1. System monitors lines containing 'unaffected by your'.")
-        Note(" 2. If acalt is 'none', system never stops for immunity.")
-        Note(" 3. If trig2/alt skill are provided, it swaps skills once.")
-        Note("")
-        ColourNote("gray", "", " Example: acalt fury neural cast 360")
-        Note(" -> If Your 'fury' is unaffected: Swaps to 'cast 360'.")
-        Note(" -> If Your 'neural' is unaffected: Shutdown.")
-        Note("")
-        ColourNote("red", "", " Fallback chains from Primary -> Alt -> Lockdown.")
-        ColourNote("silver", "", "--------------------------------------------------")
+        ColourNote("silver", "", "----------------------------------------------------------------------")
     end
 
     function OnPluginBroadcast(msg, id, name, text)
         if id ~= GMCP_ID then return end
         if text == "char.vitals" then
             Caster.check_vitals()
-            Caster.heartbeat()
+        elseif text == "char.base" then
+            Caster.update_subclass()
         elseif text == "char.status" then
             local status = parse_gmcp("char.status")
             if not status then return end
+            
             local fighting = (status.state == "8")
             
-            if fighting and not Caster.is_fighting and Caster.enabled then
-                if Caster.cfg.opener_on and Caster.cfg.opener ~= "" then
-                    Execute(Caster.cfg.opener)
-                    last_cast_time = os.clock()
-                elseif Caster.cfg.primary ~= "" then
-                    Execute(Caster.cfg.primary)
-                    last_cast_time = os.clock()
+            if fighting and not Caster.is_fighting then
+                Caster.is_fighting = true
+                if Caster.enabled then
+                    if Caster.cfg.opener_on and Caster.cfg.opener ~= "" then 
+                        Execute(Caster.cfg.opener) 
+                    end
+                    Caster.do_cast()
                 end
             elseif not fighting and Caster.is_fighting then
+                Caster.is_fighting = false
                 if Caster.cfg.heal_on and Caster.cfg.heal ~= "" then Execute(Caster.cfg.heal) end
                 if Caster.cfg.consume then Execute("consume") end
-                Caster.using_alt = false; Caster.temp_disable = false; Caster.pause_cast = false
+                Caster.using_alt = false; Caster.temp_disable = false; 
+                Caster.pause_cast = false; Caster.blocked_casts = 0; Caster.quaff_override = false
+                Caster.last_recast_time = 0 
             end
-            
-            Caster.is_fighting = fighting
-            local base = parse_gmcp("char.base")
-            if base then is_navigator = (base.subclass == "Navigator") end
         end
     end
-    Caster.log("Auto Caster V46.0 Loaded. Use Caster Help and Caster Status", "lime")
 
-    -- For other plugins to use your opener logic
-    function get_acopen()
-    -- replace 'config.acopen' with whatever variable holds your opening skill
-    return Caster.cfg.opener or ""
-    end
+    -- Initial class check
+    Caster.update_subclass()
+    Caster.log("@YAuto Caster Ready @DUse @Ccaster help @Dand @Ccaster status @Dfor more info.", "lime")
     ]]>
   </script>
 </muclient>
