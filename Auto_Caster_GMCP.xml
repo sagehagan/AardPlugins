@@ -405,6 +405,13 @@
         end
     end
 
+    function get_caster_opener()
+        if Caster and Caster.cfg then
+        return Caster.cfg.opener
+        end
+    return ""
+    end
+
     -- Initial class check
     Caster.update_subclass()
     Caster.log("@YAuto Caster Ready @DUse @Ccaster help @Dand @Ccaster status @Dfor more info.", "lime")
