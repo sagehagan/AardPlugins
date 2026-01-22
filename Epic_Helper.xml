@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE TOOLBAR SYSTEM "plugin.dtd">
+
+<muclient>
+<plugin
+   name="Epic_Helper"
+   author="Heracles"
+   id="f9283746e5a6b7c8d9e0abcd"
+   version="3.4"
+   language="Lua"
+   purpose="Epic Status Updates"
+   save_state="y"
+>
+<description trim="y">
+Usage: 
+  epichelper help     - View the help manual
+  epichelper status   - View current configuration dashboard
+</description>
+</plugin>
+
+<aliases>
+  <alias match="^epichelper help$" enabled="y" regexp="y" script="DisplayHelp"></alias>
+  <alias match="^epichelper(| debug| status)$" enabled="y" regexp="y" script="ToggleLogic"></alias>
+  <alias match="^epichelper leader ([\d\.]+) (\w+)$" enabled="y" regexp="y" script="SetLeader"></alias>
+  <alias match="^epichelper update (.*)$" enabled="y" regexp="y" script="ManualStatus"></alias>
+  <alias match="^epichelper ip (\w+)(?: (\w+))?$" enabled="y" regexp="y" script="LookupIP"></alias>
+</aliases>
+
+<script>
+<![CDATA[
+local LEADER_PORT = 4050
+local DATA_TYPE = 250 
+local is_enabled = false 
+local is_debug = false
+local target_leader = "all"
+local GMCP_HANDLER_ID = "3e7dedbe37e44942dd46d264"
+
+local function lua_trim(s)
+  return s:match("^%s*(.-)%s*$")
+end
+
+function OnPluginInstall()
+    OnPluginOpen()
+end
+
+function OnPluginOpen()
+    is_enabled = (GetVariable("is_enabled") == "1")
+    is_debug = (GetVariable("is_debug") == "1")
+    target_leader = GetVariable("target_leader") or "all"
+    
+    ColourNote("cyan", "", "Epic Helper ", "white", "", "loaded. Use ", "yellow", "", "epichelper help", "white", "", " for commands.")
+    
+    UpdateChatListener()
+end
+
+function UpdateChatListener()
+    if is_enabled then
+        ChatAcceptCalls(LEADER_PORT)
+    else
+        ChatStopAcceptingCalls()
+    end
+end
+
+function DisplayHelp()
+    local dash = string.rep("-", 60)
+    Note(dash)
+    ColourNote("cyan", "", " Epic_Helper ", "white", "", "v3.4 | Author: ", "yellow", "", "Heracles")
+    Note(dash)
+    
+    ColourNote("yellow", "", "  epichelper           ", "white", "", "- Toggle plugin On/Off")
+    ColourNote("yellow", "", "  epichelper status    ", "white", "", "- Show configuration dashboard")
+    ColourNote("yellow", "", "  epichelper debug     ", "white", "", "- Toggle tech debug mode")
+    ColourNote("yellow", "", "  epichelper ip <Name> ", "white", "", "- Find a peer's IP (Exact Casing)")
+    ColourNote("yellow", "", "  epichelper ip <Name> <chan>", "white", "", "- Share IP to a specific channel")
+    ColourNote("yellow", "", "  epichelper leader <ip> <name>", "white", "", "- Connect to a peer/leader")
+    ColourNote("yellow", "", "  epichelper update <msg>", "white", "", "- Send a manual status update")
+    
+    print("")
+    ColourNote("silver", "", "  * Use '", "white", "", "all", "silver", "", "' as a name in 'leader' to broadcast to everyone.")
+    Note(dash)
+end
+
+function LookupIP(name, line, wildcards)
+    local target_name = wildcards[1]
+    local channel = wildcards[2] 
+    local chat_list = GetChatList()
+    local found_ip = nil
+    local actual_name = ""
+
+    if chat_list then
+        for _, id in ipairs(chat_list) do
+            local peer_name = GetChatInfo(id, 1)
+            if peer_name == target_name then
+                local raw_host = GetChatInfo(id, 2)
+                found_ip = GetHostAddress(raw_host)
+                actual_name = peer_name
+                break
+            end
+        end
+    end
+
+    if found_ip then
+        local msg = "[Epic Group] " .. actual_name .. " IP is " .. found_ip
+        ColourNote("cyan", "", ">> Found IP for " .. actual_name .. ": ", "white", "", found_ip)
+        
+        if channel and channel ~= "" then
+            Execute(channel .. " " .. msg)
+            Note("IP Shared to channel: " .. channel)
+        end
+    else
+        ColourNote("red", "", ">> Error: Peer '" .. target_name .. "' not found. (Check exact casing)")
+    end
+end
+
+function ToggleLogic(name, line, wildcards)
+    local arg = lua_trim(wildcards[1]):lower()
+    if arg == "debug" then
+        is_debug = not is_debug
+        SetVariable("is_debug", is_debug and "1" or "0")
+        local color = is_debug and "blue" or "gray"
+        ColourNote("white", color, " [DEBUG MODE: " .. (is_debug and "ON" or "OFF") .. "] ")
+    elseif arg == "status" then
+        ShowDashboard()
+    else
+        is_enabled = not is_enabled
+        SetVariable("is_enabled", is_enabled and "1" or "0")
+        local color = is_enabled and "green" or "red"
+        ColourNote("white", color, " [EPIC_HELPER: " .. (is_enabled and "ENABLED" or "DISABLED") .. "] ")
+        UpdateChatListener()
+    end
+    SaveState()
+end
+
+function ShowDashboard()
+    local dash = string.rep("=", 40)
+    local status_color = is_enabled and "lime" or "red"
+    local debug_color = is_debug and "cyan" or "gray"
+    Note(dash)
+    ColourNote("white", "", " EPIC_HELPER DASHBOARD")
+    Note(dash)
+    ColourNote("silver", "", " Current Status: ", status_color, "", is_enabled and "ACTIVE (Listening)" or "INACTIVE (Closed)")
+    ColourNote("silver", "", " Debug Mode:    ", debug_color, "", is_debug and "VERBOSE" or "SILENT")
+    local lead_val = (target_leader == "all") and "Group Broadcast (all)" or target_leader
+    ColourNote("silver", "", " Current Mode:   ", "yellow", "", lead_val)
+    local chat_list = GetChatList() or {}
+    ColourNote("silver", "", " Active Peers:   ", "white", "", #chat_list)
+    Note(dash)
+end
+
+function SetLeader(name, line, wildcards)
+    if not is_enabled then Note("Epic_Helper is DISABLED.") return end
+    local ip = wildcards[1]
+    target_leader = wildcards[2]
+    SetVariable("target_leader", target_leader)
+    SaveState()
+    ColourNote("white", "blue", " SETTING LEADER: " .. target_leader .. " ")
+    ChatCall(ip, LEADER_PORT)
+end
+
+function OnPluginBroadcast(msg, id, name, text)
+    if not is_enabled or id ~= GMCP_HANDLER_ID then return end
+    if text == "comm.tick" then
+        SendStatus("TICK_SYNC")
+    end
+end
+
+function SendStatus(status_text)
+    if not is_enabled then return end
+    if target_leader == "all" then
+        ChatGroup("EpicGroup", status_text, DATA_TYPE)
+        return
+    end
+    local chat_list = GetChatList()
+    if chat_list then
+        for _, id in ipairs(chat_list) do
+            if GetChatInfo(id, 1) == target_leader then
+                ChatMessage(id, DATA_TYPE, status_text)
+            end
+        end
+    end
+end
+
+function ManualStatus(name, line, wildcards)
+    if not is_enabled then return end
+    SendStatus(wildcards[1])
+    ColourNote("silver", "", "[", "cyan", "", "P2P", "silver", "", "] Update sent: " .. wildcards[1])
+end
+
+function OnPluginChatConnect(id, name, ip)
+    SetChatOption(id, "group", "EpicGroup")
+    ColourNote("lime", "", ">> Connected to Peer: " .. name)
+    if name == target_leader then
+        ColourNote("yellow", "blue", " TARGET LEADER '" .. name .. "' IS CONNECTED ")
+    end
+end
+
+function OnPluginChatMessage(id, message_type, text)
+    if message_type == DATA_TYPE then
+        local sender = GetChatInfo(id, 1)
+        if is_debug then
+            ColourNote("yellow", "", "[DEBUG]", "white", "", " From: ", "cyan", "", sender, "white", "", " | Data: ", "green", "", text)
+        end
+        if text == "TICK_SYNC" then
+            if not is_debug then ColourNote("darkgray", "", "[EpicSync] " .. sender .. " tick.") end
+        else
+            ColourNote("cyan", "", "[EpicStatus] ", "white", "", sender .. ": " .. text)
+        end
+        return true 
+    end
+    return false 
+end
+]]>
+</script>
+</muclient>
