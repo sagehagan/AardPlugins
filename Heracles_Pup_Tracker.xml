@@ -8,9 +8,9 @@
   language="Lua"
   purpose="Automatic Pup Tracking"
   save_state="y"
-  date_written="2026-01-19"
+  date_written="2026-01-20"
   requires="5.06"
-  version="8.7"
+  version="8.8"
   >
 </plugin>
 
@@ -57,8 +57,15 @@ local color_map = {
     ["@Y"] = "@Y", ["@C"] = "@C", ["@W"] = "@W", ["@D"] = "@D"
 }
 
+-- Returns the current date string in EST (UTC-5)
+function GetESTDate()
+    local utc = os.time(os.date("!*t"))
+    local est = utc - (5 * 3600)
+    return os.date("%d %m %Y", est)
+end
+
 function OnPluginInstall()
-    t_date = GetVariable("today_date") or os.date("%d %m %Y")
+    t_date = GetVariable("today_date") or GetESTDate()
     t_trains = tonumber(GetVariable("today_trains")) or 0
     t_pups = tonumber(GetVariable("today_pups")) or 0
     t_gold = tonumber(GetVariable("today_gold")) or 0
@@ -67,12 +74,11 @@ function OnPluginInstall()
 
     local h_var = GetVariable("history_table")
     if h_var and h_var ~= "" then history = loadstring("return " .. h_var)() or {} end
-    
-    -- FORCE RESET for v8.7 to clear the "stuck" 35s data
-    today_times = {} 
+    local t_var = GetVariable("today_times_table")
+    if t_var and t_var ~= "" then today_times = loadstring("return " .. t_var)() or {} end
     
     last_pup_time = GetInfo(304)
-    AnsiNote("@R[ @WHeracles @R] @DPup Tracker v8.7 Loaded. Daily Average Reset for fresh data.")
+    AnsiNote("@R[ @WHeracles @R] @DPup Loaded. Reset synced to @WEST@D. Use @Cpt help @Dfor commands.")
     return nil
 end
 
@@ -146,7 +152,6 @@ function TrgFinish(name, line, w)
         
         table.insert(history, statsTime)
         if #history > 10 then table.remove(history, 1) end
-        
         table.insert(today_times, statsTime)
         
         if report_active then
@@ -181,9 +186,10 @@ function ToggleReport(name, line, wildcards)
 end
 
 function TmrPulse(name)
-    local currDate = os.date("%d %m %Y")
+    local currDate = GetESTDate()
     if t_date ~= currDate then
-        t_date, t_trains, t_pups, t_gold = currDate, 0, 0, 0
+        t_date = currDate
+        t_trains, t_pups, t_gold = 0, 0, 0
         history, today_times = {}, {}
         SaveState()
     end
