@@ -9,7 +9,7 @@
     language="Lua" 
     purpose="Automatic Spell/Skill Casting" 
     save_state="y" 
-    version="8.1">
+    version="8.4">
   </plugin>
 
   <triggers>
@@ -26,6 +26,13 @@
       regexp="y" 
       script="ImmunityTrigger" 
       sequence="90" 
+    />
+    <trigger 
+      enabled="y" 
+      match="^.* is DEAD!!$" 
+      regexp="y" 
+      script="DeathHandler" 
+      sequence="80" 
     />
   </triggers>
 
@@ -61,6 +68,7 @@
         quaff_override = false,
         subclass     = "Unknown",
         recast_speed = 2.0,
+        can_backstab = true, 
         
         cfg = {
             primary      = GetVariable("primary") or "",
@@ -105,33 +113,20 @@
 
     function Caster.log(msg, default_color)
         local colors = { 
-            ["@R"] = "red", 
-            ["@Y"] = "yellow", 
-            ["@D"] = "silver", 
-            ["@C"] = "cyan",
-            ["@G"] = "lime",
-            ["@M"] = "magenta"
+            ["@R"] = "red", ["@Y"] = "yellow", ["@D"] = "silver", 
+            ["@C"] = "cyan", ["@G"] = "lime", ["@M"] = "magenta"
         }
-        
         ColourTell("red", "", " >>> ")
-        
         local current_color = default_color or "white"
         local last_pos = 1
-        
         for code, pos in msg:gmatch("(@%u)()") do
             local text_segment = msg:sub(last_pos, pos - 3)
-            if text_segment ~= "" then
-                ColourTell(current_color, "", text_segment)
-            end
+            if text_segment ~= "" then ColourTell(current_color, "", text_segment) end
             current_color = colors[code] or current_color
             last_pos = pos
         end
-        
         local final_segment = msg:sub(last_pos)
-        if final_segment ~= "" then
-            ColourTell(current_color, "", final_segment)
-        end
-        
+        if final_segment ~= "" then ColourTell(current_color, "", final_segment) end
         Note("") 
     end
 
@@ -145,6 +140,13 @@
         Caster.log("Debug Messaging: " .. (debug_mode and "ON" or "OFF"), "cyan")
     end
 
+    function DeathHandler(name, line, wildcards)
+        if Caster.subclass:lower() == "ninja" then
+            Caster.can_backstab = true
+            if debug_mode then Caster.log("Mob Dead: Resetting Backstab Flag.", "lime") end
+        end
+    end
+
     function Caster.do_cast()
         if not Caster.enabled or not Caster.is_fighting or Caster.temp_disable then return end
         
@@ -153,14 +155,17 @@
             if Caster.blocked_casts >= 3 then
                 Caster.warn("Safety Trigger: 3 Recasts Blocked. Resuming Fire.")
                 Caster.quaff_override = true
-            else
-                return 
-            end
+            else return end
         end
 
         local skill = Caster.using_alt and Caster.cfg.alt or Caster.cfg.primary
         if skill ~= "" then
-            Execute(skill)
+            if Caster.subclass:lower() == "ninja" and Caster.can_backstab then
+                Execute("backstab;" .. skill)
+                Caster.can_backstab = false
+            else
+                Execute(skill)
+            end
         end
     end
 
@@ -172,14 +177,12 @@
         if word == active_trig then
             local now = os.clock()
             local elapsed = now - Caster.last_recast_time
-            
             if elapsed < Caster.recast_speed then
                 if debug_mode then 
-                    Caster.log(string.format("Recast Halted: %.1fs Cooldown (%.1fs left).", Caster.recast_speed, Caster.recast_speed - elapsed), "orange") 
+                    Caster.log(string.format("Recast Halted: %.1fs Cooldown.", Caster.recast_speed), "orange") 
                 end
                 return
             end
-
             Caster.last_recast_time = now
             Caster.do_cast()
         end
@@ -188,7 +191,6 @@
     function ImmunityTrigger(name, line, wildcards)
         if not Caster.is_fighting or Caster.temp_disable then return end
         local resisted_skill = wildcards.keyword:lower()
-
         if not Caster.using_alt and resisted_skill == Caster.cfg.pri_trig:lower() then
             if Caster.cfg.alt ~= "" then
                 Caster.warn("PRIMARY IMMUNE (" .. resisted_skill .. ")! Swapping to Alt.")
@@ -207,15 +209,12 @@
 
     function Caster.check_vitals()
         local now = os.clock()
-        
         if Caster.pause_cast and (now - Caster.last_quaff) > 3 then 
             Caster.pause_cast = false 
             Caster.do_cast()
         end
-
         if not Caster.cfg.quaff_on or not Caster.enabled or not Caster.is_fighting then return end
         if (now - Caster.last_quaff) < 3 then return end
-
         local current_vitals = parse_gmcp("char.vitals")
         local max_vitals = parse_gmcp("char.maxstats")
         if not current_vitals or not max_vitals then return end
@@ -251,7 +250,6 @@
 
     function AliasHandler(name, line, wildcards)
         local cmd = line:lower()
-
         if cmd:find("^acalt none") then
             Caster.cfg.alt = ""; Caster.cfg.alt_trig = ""
             SetVariable("alt", ""); SetVariable("alt_trig", "")
@@ -290,44 +288,49 @@
         Caster.update_subclass()
         local function status_tag(b) return b and "[ ACTIVE ]" or "[ INACTIVE ]", b and "lime" or "red" end
         local function val_tag(v) return v ~= "" and v or "Not Set", v ~= "" and "yellow" or "gray" end
-
         ColourNote("silver", "", "======================================================================")
-        ColourTell("cyan", "", " [ CASTER SYSTEM v8.1 ]") 
+        ColourTell("cyan", "", " [ CASTER SYSTEM v8.4 ]") 
         local p, pc = status_tag(Caster.enabled)
         ColourTell("silver", "", " Status: ") ColourNote(pc, "", p)
         
-        ColourTell("silver", "", "   Class Info:    ") 
+        ColourTell("silver", "", "    Class Info:     ") 
         ColourTell("magenta", "", string.format("%-14s", Caster.subclass))
         ColourNote("silver", "", "Recast Speed: " .. Caster.recast_speed .. "s")
-        Note("")
         
+        -- Ninja Backstab UI Logic
+        ColourTell("silver", "", "    Backstab Mode:  ")
+        if Caster.subclass:lower() == "ninja" then
+            ColourTell("lime", "", "[ Ninja ] ")
+            ColourTell("silver", "", "- Can Backstab ")
+            local bst, bsc = (Caster.can_backstab and "[ TRUE ]" or "[ FALSE ]"), (Caster.can_backstab and "lime" or "red")
+            ColourNote(bsc, "", bst)
+        else
+            ColourNote("gray", "", "[ Not Ninja ] - Backstab Disabled")
+        end
+        Note("")
+
         ColourNote("silver", "", " COMMANDS & TRIGGERS")
         local p_val, p_col = val_tag(Caster.cfg.primary)
-        ColourTell("silver", "", "   Primary Loop:  ") ColourTell("cyan", "", string.format("%-12s", "  [" .. Caster.cfg.pri_trig .. "]")) 
+        ColourTell("silver", "", "    Primary Loop:   ") ColourTell("cyan", "", string.format("%-12s", "   [" .. Caster.cfg.pri_trig .. "]")) 
         ColourNote(p_col, "", " -> " .. p_val)
-        
         local a_val, a_col = val_tag(Caster.cfg.alt)
-        ColourTell("silver", "", "   Alternate Loop:") ColourTell("orange", "", string.format("%-12s", "  [" .. Caster.cfg.alt_trig .. "]")) 
+        ColourTell("silver", "", "    Alternate Loop: ") ColourTell("orange", "", string.format("%-12s", "   [" .. Caster.cfg.alt_trig .. "]")) 
         ColourNote(a_col, "", " -> " .. a_val)
         Note("")
-
         ColourNote("silver", "", " COMBAT SEQUENCE")
         local op, opc = status_tag(Caster.cfg.opener_on)
-        ColourTell("silver", "", "   Opener:          ") ColourTell(opc, "", string.format("%-14s", op)) ColourNote("gray", "", "Cmd: " .. (Caster.cfg.opener ~= "" and Caster.cfg.opener or "None"))
-        
+        ColourTell("silver", "", "    Opener:           ") ColourTell(opc, "", string.format("%-14s", op)) ColourNote("gray", "", "Cmd: " .. (Caster.cfg.opener ~= "" and Caster.cfg.opener or "None"))
         local he, hec = status_tag(Caster.cfg.heal_on)
-        ColourTell("silver", "", "   Recovery:        ") ColourTell(hec, "", string.format("%-14s", he)) ColourNote("gray", "", "Cmd: " .. (Caster.cfg.heal ~= "" and Caster.cfg.heal or "None"))
-        
+        ColourTell("silver", "", "    Recovery:         ") ColourTell(hec, "", string.format("%-14s", he)) ColourNote("gray", "", "Cmd: " .. (Caster.cfg.heal ~= "" and Caster.cfg.heal or "None"))
         local co, coc = status_tag(Caster.cfg.consume)
-        ColourTell("silver", "", "   Consume:         ") ColourNote(coc, "", co)
+        ColourTell("silver", "", "    Consume:          ") ColourNote(coc, "", co)
         Note("")
-
         ColourNote("silver", "", " VITAL MONITORING (AUTO-QUAFF)")
         local qu, quc = status_tag(Caster.cfg.quaff_on)
-        ColourTell("silver", "", "   Power:           ") ColourNote(quc, "", qu)
-        ColourTell("silver", "", "   Thresholds:      ")
-        ColourTell("lime", "", "HP: " .. Caster.vitals.hp.pct .. "% (" .. Caster.vitals.hp.cnt .. "x)  ")
-        ColourTell("cyan", "", "MN: " .. Caster.vitals.mn.pct .. "% (" .. Caster.vitals.mn.cnt .. "x)  ")
+        ColourTell("silver", "", "    Power:            ") ColourNote(quc, "", qu)
+        ColourTell("silver", "", "    Thresholds:       ")
+        ColourTell("lime", "", "HP: " .. Caster.vitals.hp.pct .. "% (" .. Caster.vitals.hp.cnt .. "x)   ")
+        ColourTell("cyan", "", "MN: " .. Caster.vitals.mn.pct .. "% (" .. Caster.vitals.mn.cnt .. "x)   ")
         ColourNote("orange", "", "MV: " .. Caster.vitals.mv.pct .. "% (" .. Caster.vitals.mv.cnt .. "x)")
         ColourNote("silver", "", "======================================================================")
     end
@@ -352,13 +355,13 @@
         ColourTell("white", "", " caster help          ") ColourNote("silver", "", "Display this help menu.")
         Note("")
         ColourNote("silver", "", " EXAMPLES:")
-        Note("   ac fury cast 626                 - Matches 'Your fury'")
-        Note("   acalt bone-crunching c 358       - Matches 'Your bone-crunching'")
-        Note("   ac piercing cast 574             - Matches 'Your piercing'")
-        Note("   ac spiraling spiral              - Matches 'Your spiraling'")
-        Note("   acopen cast 574                  - Fires heavenly smiting once at combat start.")
-        Note("   acheal cast 146 Heracles         - Fires regen once at combat end. Remove target to heal self.")
-        Note("   acquaff hp 40 3                  - Quaffs 3 heals when HP falls below 40%.")
+        Note("    ac fury cast 626                 - Matches 'Your fury'")
+        Note("    acalt bone-crunching c 358       - Matches 'Your bone-crunching'")
+        Note("    ac piercing cast 574             - Matches 'Your piercing'")
+        Note("    ac spiraling spiral              - Matches 'Your spiraling'")
+        Note("    acopen cast 574                  - Fires heavenly smiting once at combat start.")
+        Note("    acheal cast 146 Heracles         - Fires regen once at combat end. Remove target to heal self.")
+        Note("    acquaff hp 40 3                  - Quaffs 3 heals when HP falls below 40%.")
         Note("")
         ColourNote("red", "", " Auto Quaff requires Durel's Inventory Plugin")
         ColourNote("red", "", "   - dinv consume must be confingured for heal/mana/move")
@@ -367,10 +370,12 @@
         Note(" 1. START: Fires Opener then immediately fires Primary Skill.")
         Note(" 2. RECAST: Fires ONLY when damage word (trig) is detected.")
         Note(" 3. COOLDOWN: 2.0s delay (0.5s for Navigators).")
-        Note(" 4. IMMUNITY: Swaps to Alt or shuts down if unaffected.")
-        Note(" 5. QUAFF: Stops casting for 3s per quaff.")
-        Note(" 6. SHUTDOWN: Re-enables at combat end if disabled by immunity.")
+        Note(" 4. NINJA: Lead with Backstab once per target (Resets on 'DEAD!!').")
+        Note(" 5. IMMUNITY: Swaps to Alt or shuts down if unaffected.")
+        Note(" 6. QUAFF: Stops casting for 3s per quaff.")
+        Note(" 7. SHUTDOWN: Re-enables at combat end if disabled by immunity.")
         Note("")
+        ColourNote("red", "", " Ninjas should use spiraling / spiral for primary skill - Backstab logic built in.")
         ColourNote("silver", "", "----------------------------------------------------------------------")
     end
 
@@ -383,15 +388,12 @@
         elseif text == "char.status" then
             local status = parse_gmcp("char.status")
             if not status then return end
-            
             local fighting = (status.state == "8")
-            
             if fighting and not Caster.is_fighting then
                 Caster.is_fighting = true
+                Caster.can_backstab = true 
                 if Caster.enabled then
-                    if Caster.cfg.opener_on and Caster.cfg.opener ~= "" then 
-                        Execute(Caster.cfg.opener) 
-                    end
+                    if Caster.cfg.opener_on and Caster.cfg.opener ~= "" then Execute(Caster.cfg.opener) end
                     Caster.do_cast()
                 end
             elseif not fighting and Caster.is_fighting then
@@ -400,16 +402,14 @@
                 if Caster.cfg.consume then Execute("consume") end
                 Caster.using_alt = false; Caster.temp_disable = false; 
                 Caster.pause_cast = false; Caster.blocked_casts = 0; Caster.quaff_override = false
-                Caster.last_recast_time = 0 
+                Caster.last_recast_time = 0
             end
         end
     end
 
     function get_caster_opener()
-        if Caster and Caster.cfg then
-        return Caster.cfg.opener
-        end
-    return ""
+        if Caster and Caster.cfg then return Caster.cfg.opener end
+        return ""
     end
 
     -- Initial class check
