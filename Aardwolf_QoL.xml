@@ -1,0 +1,385 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+
+<muclient>
+<plugin
+   name="Aardwolf_QoL"
+   author="Heracles"
+   id="61617264776f6c66516f4c78"
+   language="Lua"
+   purpose="Improving Aardwolf QoL"
+   save_state="y"
+   date_written="2026-01-22 18:05:00"
+   requires="5.06"
+   version="2.3"
+   >
+<description trim="y">
+<![CDATA[
+Aardwolf QoL Plugin
+Author: Heracles
+
+Features:
+- Categorized UI (Universal & Thief)
+- Automatic Sanctuary Protection
+- Thief Quickstab tracking with intelligent combat-interruption recovery
+- Active GMCP State Monitoring with Fail-safe Parsing
+- Professional Colorful UI and Debug Suite
+]]>
+</description>
+
+</plugin>
+
+<triggers>
+  <trigger
+   enabled="y"
+   match="^You are surrounded by a shimmering white aura of divine protection\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnSancCast"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^Your brilliant white aura of sanctuary shimmers and is gone\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnSancFall"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^You are already in sanctuary\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnAlreadyInSanc"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^You can\'t concentrate enough to cast \'sanctuary\'\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnSancConcentrationFail"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^## You may now use Quickstab abilities\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnQuickstabReset"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^Your weapon hand pulses with energy, ready to strike\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnQuickstabStart"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^You feel a little less focused on your backstab skills\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnQuickstabFade"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^Not while you are fighting\!$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnQuickstabCombatFail"
+  >
+  </trigger>
+</triggers>
+
+<aliases>
+  <alias match="qol help" enabled="y" send_to="12" sequence="100" script="ShowHelp"></alias>
+  <alias match="^qol setfloat (.*)$" enabled="y" regexp="y" send_to="12" sequence="100" script="Set_Float_ID"></alias>
+  <alias match="^qol setaura (.*)$" enabled="y" regexp="y" send_to="12" sequence="100" script="Set_Aura_ID"></alias>
+  <alias match="qol status" enabled="y" send_to="12" sequence="100" script="CheckStatus"></alias>
+  <alias match="qol debug" enabled="y" send_to="12" sequence="100" script="ToggleDebug"></alias>
+</aliases>
+
+<script>
+<![CDATA[
+require "json"
+
+-- Configuration variables (Persisted)
+local floatID = GetVariable("floatID") or ""
+local auraID = GetVariable("auraID") or ""
+local debugMode = (GetVariable("debugMode") == "1")
+
+-- State variables (Volatile)
+local currentState = 0
+local pendingCommand = ""
+local quickstabQueued = false
+local quickstabActive = false
+local quickstabRecentlySent = false
+
+-- The ID of the Aardwolf GMCP Handler plugin
+local GMCP_PLUGIN_ID = "3e7dedbe37e44942dd46d264"
+
+-- UI Color Palette
+local PRIMARY = "cyan"
+local SECONDARY = "lightgrey"
+local HIGHLIGHT = "yellow"
+local ACCENT = "magenta"
+local SUCCESS = "lime"
+local WARN = "orange"
+local DEBUG_CLR = "gray"
+
+function OnPluginInstall()
+    ColourNote(PRIMARY, "", "[Aardwolf QoL] ", SECONDARY, "", "Plugin by Heracles loaded. Type ", HIGHLIGHT, "", "qol help", SECONDARY, "", " or ", HIGHLIGHT, "", "qol status", SECONDARY, "", " to begin.")
+    UpdateStateFromGMCP()
+end
+
+function OnPluginSaveState()
+    SetVariable("floatID", floatID)
+    SetVariable("auraID", auraID)
+    SetVariable("debugMode", debugMode and "1" or "0")
+end
+
+-------------------------------------------------------------------------
+-- UI & Rendering
+-------------------------------------------------------------------------
+
+function ShowHelp()
+    print("")
+    ColourNote(PRIMARY, "", "================================================================================")
+    ColourNote(HIGHLIGHT, "", " AARDWOLF QOL HELP - HERACLES ")
+    ColourNote(PRIMARY, "", "================================================================================")
+    
+    ColourNote(ACCENT, "", "\n [ Universal Features ]")
+    local u_cmds = {
+        {cmd = "qol status",       desc = "Displays configuration, state, and buff status."},
+        {cmd = "qol setfloat <id>", desc = "Sets Float Item ID (for Sanctuary)."},
+        {cmd = "qol setaura <id>",  desc = "Sets Aura Item ID (Standard gear)."},
+        {cmd = "qol help",         desc = "Displays this menu."}
+    }
+    for _, v in ipairs(u_cmds) do
+        ColourTell(HIGHLIGHT, "", string.format("  %-18s", v.cmd))
+        ColourNote(SECONDARY, "", " : " .. v.desc)
+    end
+
+    ColourNote(ACCENT, "", "\n [ Thief Features ]")
+    ColourNote(SECONDARY, "", "  - Automatic Quickstab queuing for State 3 (Standing).")
+    ColourNote(SECONDARY, "", "  - Smart Re-queue: Only triggers if QOL's quickstab is blocked by combat.")
+
+    ColourNote(ACCENT, "", "\n [ System ]")
+    ColourTell(HIGHLIGHT, "", string.format("  %-18s", "qol debug"))
+    ColourNote(SECONDARY, "", " : Toggle verbose troubleshooting messages.")
+    
+    ColourNote(PRIMARY, "", "\n================================================================================")
+    print("")
+end
+
+function CheckStatus()
+    local state_color = (currentState == 3 or currentState == 8) and SUCCESS or WARN
+    local qs_status_text = "Faded"
+    local qs_color = WARN
+    
+    if quickstabQueued then
+        qs_status_text = "QUEUED (Pending State 3)"
+        qs_color = HIGHLIGHT
+    elseif quickstabActive then
+        qs_status_text = "ACTIVE"
+        qs_color = SUCCESS
+    end
+
+    print("")
+    ColourNote(PRIMARY, "", "--------------------------------------------------------------------------------")
+    ColourNote(HIGHLIGHT, "", " Aardwolf QoL Status ")
+    ColourNote(PRIMARY, "", "--------------------------------------------------------------------------------")
+    
+    ColourTell(SECONDARY, "", "  Current State:     ") ColourNote(state_color, "", tostring(currentState))
+    
+    ColourNote(ACCENT, "", "\n [ Universal Features: Sanctuary ]")
+    ColourTell(SECONDARY, "", "  Float Item ID:     ") ColourNote(floatID ~= "" and SUCCESS or WARN, "", (floatID ~= "" and floatID or "NOT SET"))
+    ColourTell(SECONDARY, "", "  Aura Item ID:      ") ColourNote(auraID ~= "" and SUCCESS or WARN, "", (auraID ~= "" and auraID or "NOT SET"))
+    ColourTell(SECONDARY, "", "  Sanc Gear Queue:   ") ColourNote(pendingCommand ~= "" and HIGHLIGHT or SECONDARY, "", (pendingCommand ~= "" and pendingCommand or "None"))
+
+    ColourNote(ACCENT, "", "\n [ Thief Features: Quickstab ]")
+    ColourTell(SECONDARY, "", "  Quickstab Status:  ") ColourNote(qs_color, "", qs_status_text)
+
+    ColourNote(ACCENT, "", "\n [ System ]")
+    ColourTell(SECONDARY, "", "  Debug Mode:        ") ColourNote(debugMode and SUCCESS or SECONDARY, "", (debugMode and "ON" or "OFF"))
+    
+    ColourNote(PRIMARY, "", "--------------------------------------------------------------------------------")
+    print("")
+end
+
+-------------------------------------------------------------------------
+-- GMCP & Debug
+-------------------------------------------------------------------------
+
+function DebugPrint(msg)
+    if debugMode then ColourNote(DEBUG_CLR, "", "[QOL DEBUG] " .. msg) end
+end
+
+function ToggleDebug()
+    debugMode = not debugMode
+    local status = debugMode and "ENABLED" or "DISABLED"
+    ColourNote(PRIMARY, "", "[Aardwolf QoL] ", SECONDARY, "", "Debug messaging is now ", (debugMode and SUCCESS or WARN), "", status)
+    SaveState()
+end
+
+function OnPluginBroadcast(msg, id, name, text)
+    if id == GMCP_PLUGIN_ID and text:lower() == "char.status" then
+        UpdateStateFromGMCP()
+    end
+end
+
+function UpdateStateFromGMCP()
+    local res, val = CallPlugin(GMCP_PLUGIN_ID, "gmcpval", "char.status")
+    if res == 0 and val ~= "" then
+        local new_state = string.match(val, '[Ss]tate%s*=%s*"(%d+)"')
+        if not new_state then
+            local f = loadstring("return " .. val)
+            if f then
+                local data = f()
+                if data then new_state = data.state or data.State end
+            end
+        end
+        if new_state then
+            local old_state = currentState
+            currentState = tonumber(new_state)
+            
+            if old_state ~= currentState then
+                DebugPrint("State change: " .. old_state .. " -> " .. currentState)
+                
+                -- Release Sanc Queue (State 3 or 8)
+                if (currentState == 3 or currentState == 8) and pendingCommand ~= "" then
+                    ExecuteQueuedCommand()
+                end
+                
+                -- Release Quickstab Queue (Strictly State 3)
+                if currentState == 3 and quickstabQueued then
+                    ExecuteQuickstab()
+                end
+            end
+        end
+    end
+end
+
+-------------------------------------------------------------------------
+-- Handlers: Universal
+-------------------------------------------------------------------------
+
+function Set_Float_ID(n, l, w)
+    floatID = w[1]
+    ColourNote(SUCCESS, "", "[Aardwolf QoL] Float ID set to: " .. floatID)
+    SaveState()
+end
+
+function Set_Aura_ID(n, l, w)
+    auraID = w[1]
+    ColourNote(SUCCESS, "", "[Aardwolf QoL] Aura ID set to: " .. auraID)
+    SaveState()
+end
+
+function OnSancCast()
+    if floatID == "" then return end
+    QueueOrSend("wear " .. floatID)
+end
+
+function OnSancFall()
+    if auraID == "" then return end
+    QueueOrSend("wear " .. auraID)
+end
+
+function OnAlreadyInSanc()
+    if currentState == 3 and floatID ~= "" then
+        Send("wear " .. floatID)
+        Send("cast 'sanctuary'")
+    end
+end
+
+function OnSancConcentrationFail()
+    if floatID ~= "" then Send("wear " .. floatID) end
+end
+
+function QueueOrSend(cmd)
+    if currentState == 3 or currentState == 8 then
+        Send(cmd)
+        pendingCommand = ""
+    else
+        pendingCommand = cmd
+        ColourNote(HIGHLIGHT, "", "[Aardwolf QoL] State " .. currentState .. " restricted. Queued: " .. cmd)
+    end
+end
+
+function ExecuteQueuedCommand()
+    Send(pendingCommand)
+    ColourNote(SUCCESS, "", "[Aardwolf QoL] Sanc Queue released: " .. pendingCommand)
+    pendingCommand = ""
+end
+
+-------------------------------------------------------------------------
+-- Handlers: Thief
+-------------------------------------------------------------------------
+
+function OnQuickstabReset()
+    if currentState == 3 then
+        ExecuteQuickstab()
+    else
+        quickstabQueued = true
+        DebugPrint("Quickstab reset. Queued for next State 3.")
+    end
+end
+
+function OnQuickstabCombatFail()
+    -- Only re-queue if the failure message followed OUR attempt to send quickstab
+    if quickstabRecentlySent and not quickstabActive then
+        quickstabQueued = true
+        quickstabRecentlySent = false -- Reset the sent flag
+        DebugPrint("Quickstab blocked by combat. Re-queuing for State 3.")
+        ColourNote(WARN, "", "[Aardwolf QoL] Quickstab blocked by combat. Re-queuing for State 3.")
+    end
+end
+
+function OnQuickstabStart()
+    quickstabActive = true
+    quickstabQueued = false
+    quickstabRecentlySent = false -- Clear flag on success
+    DebugPrint("Quickstab buff is now ACTIVE.")
+end
+
+function OnQuickstabFade()
+    quickstabActive = false
+    DebugPrint("Quickstab buff has FADED.")
+end
+
+function ExecuteQuickstab()
+    quickstabRecentlySent = true
+    Send("quickstab")
+    quickstabQueued = false
+    
+    -- Safety: If no response in 2 seconds, assume it didn't hit combat and clear the flag
+    DoAfterSpecial(2, 'quickstabRecentlySent = false', 12)
+    
+    ColourNote(SUCCESS, "", "[Aardwolf QoL] Executing: quickstab")
+end
+
+]]>
+</script>
+
+</muclient>
