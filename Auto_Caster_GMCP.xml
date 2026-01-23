@@ -9,7 +9,7 @@
     language="Lua" 
     purpose="Automatic Spell/Skill Casting" 
     save_state="y" 
-    version="8.4">
+    version="8.5">
   </plugin>
 
   <triggers>
@@ -29,7 +29,7 @@
     />
     <trigger 
       enabled="y" 
-      match="^.* is DEAD!!$" 
+      match="^.* is DEAD!!?$" 
       regexp="y" 
       script="DeathHandler" 
       sequence="80" 
