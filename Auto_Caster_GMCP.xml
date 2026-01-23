@@ -9,7 +9,7 @@
     language="Lua" 
     purpose="Automatic Spell/Skill Casting" 
     save_state="y" 
-    version="8.5">
+    version="8.6">
   </plugin>
 
   <triggers>
@@ -43,6 +43,7 @@
     <alias match="^acopen(?: +(?&lt;cmd&gt;.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acheal(?: +(?&lt;cmd&gt;.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acconsume$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
+    <alias match="^acstab$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acquaff(?: +(?&lt;type&gt;hp|mn|mv) +(?&lt;pct&gt;\d+) +(?&lt;cnt&gt;\d+))?$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
     <alias match="^acquaff$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
     <alias match="^ac debug$" enabled="y" regexp="y" script="ToggleDebug" sequence="20" />
@@ -81,6 +82,7 @@
             heal_on      = (GetVariable("heal_on") or "0") == "1",
             consume      = (GetVariable("consume") or "0") == "1",
             quaff_on     = (GetVariable("quaff_on") or "0") == "1",
+            stab_on      = (GetVariable("stab_on") or "1") == "1",
         },
 
         vitals = {
@@ -160,7 +162,7 @@
 
         local skill = Caster.using_alt and Caster.cfg.alt or Caster.cfg.primary
         if skill ~= "" then
-            if Caster.subclass:lower() == "ninja" and Caster.can_backstab then
+            if Caster.subclass:lower() == "ninja" and Caster.cfg.stab_on and Caster.can_backstab then
                 Execute("backstab;" .. skill)
                 Caster.can_backstab = false
             else
@@ -280,6 +282,9 @@
         elseif cmd:find("^acconsume") then
             Caster.cfg.consume = not Caster.cfg.consume; SetVariable("consume", Caster.cfg.consume and "1" or "0")
             Caster.log("Combat Consume: " .. (Caster.cfg.consume and "ON" or "OFF"))
+        elseif cmd:find("^acstab") then
+            Caster.cfg.stab_on = not Caster.cfg.stab_on; SetVariable("stab_on", Caster.cfg.stab_on and "1" or "0")
+            Caster.log("Ninja Backstab: " .. (Caster.cfg.stab_on and "ON" or "OFF"), Caster.cfg.stab_on and "lime" or "red")
         end
         SaveState()
     end
@@ -300,7 +305,8 @@
         -- Ninja Backstab UI Logic
         ColourTell("silver", "", "    Backstab Mode:  ")
         if Caster.subclass:lower() == "ninja" then
-            ColourTell("lime", "", "[ Ninja ] ")
+            local onoff, oncol = Caster.cfg.stab_on and "[ ENABLED ]" or "[ DISABLED ]", Caster.cfg.stab_on and "lime" or "red"
+            ColourTell(oncol, "", onoff .. " ")
             ColourTell("silver", "", "- Can Backstab ")
             local bst, bsc = (Caster.can_backstab and "[ TRUE ]" or "[ FALSE ]"), (Caster.can_backstab and "lime" or "red")
             ColourNote(bsc, "", bst)
@@ -347,6 +353,7 @@
         ColourTell("lime", "", " acopen <skill>       ") ColourNote("silver", "", "Toggle/Set skill fired at combat start.")
         ColourTell("lime", "", " acheal <skill>       ") ColourNote("silver", "", "Toggle/Set skill fired at combat end.")
         ColourTell("lime", "", " acconsume            ") ColourNote("silver", "", "Toggle post-combat 'consume' command.")
+        ColourTell("lime", "", " acstab               ") ColourNote("silver", "", "Toggle Ninja backstab functionality.")
         Note("")
         ColourTell("cyan", "", " acquaff <t> <%> <c>  ") ColourNote("silver", "", "Set vital type (hp|mn|mv), %, and repeat.")
         ColourTell("cyan", "", " acquaff              ") ColourNote("silver", "", "Toggle the Auto-Quaff system.")

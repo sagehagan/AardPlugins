@@ -9,9 +9,9 @@
    language="Lua"
    purpose="Improving Aardwolf QoL"
    save_state="y"
-   date_written="2026-01-22 18:05:00"
+   date_written="2026-01-22 18:41:00"
    requires="5.06"
-   version="2.3"
+   version="2.4"
    >
 <description trim="y">
 <![CDATA[
@@ -21,7 +21,7 @@ Author: Heracles
 Features:
 - Categorized UI (Universal & Thief)
 - Automatic Sanctuary Protection
-- Thief Quickstab tracking with intelligent combat-interruption recovery
+- Thief Quickstab tracking with intelligent combat and failure recovery
 - Active GMCP State Monitoring with Fail-safe Parsing
 - Professional Colorful UI and Debug Suite
 ]]>
@@ -97,6 +97,16 @@ Features:
    send_to="12"
    sequence="100"
    script="OnQuickstabFade"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^You fail to focus on your backstab speed\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnQuickstabFail"
   >
   </trigger>
 
@@ -182,7 +192,8 @@ function ShowHelp()
 
     ColourNote(ACCENT, "", "\n [ Thief Features ]")
     ColourNote(SECONDARY, "", "  - Automatic Quickstab queuing for State 3 (Standing).")
-    ColourNote(SECONDARY, "", "  - Smart Re-queue: Only triggers if QOL's quickstab is blocked by combat.")
+    ColourNote(SECONDARY, "", "  - Skill Recovery: Automatically retries on focus failure.")
+    ColourNote(SECONDARY, "", "  - Smart Re-queue: Triggers if QOL's quickstab is blocked by combat.")
 
     ColourNote(ACCENT, "", "\n [ System ]")
     ColourTell(HIGHLIGHT, "", string.format("  %-18s", "qol debug"))
@@ -346,11 +357,15 @@ function OnQuickstabReset()
     end
 end
 
+function OnQuickstabFail()
+    DebugPrint("Quickstab focus failure detected. Retrying...")
+    ExecuteQuickstab()
+end
+
 function OnQuickstabCombatFail()
-    -- Only re-queue if the failure message followed OUR attempt to send quickstab
     if quickstabRecentlySent and not quickstabActive then
         quickstabQueued = true
-        quickstabRecentlySent = false -- Reset the sent flag
+        quickstabRecentlySent = false
         DebugPrint("Quickstab blocked by combat. Re-queuing for State 3.")
         ColourNote(WARN, "", "[Aardwolf QoL] Quickstab blocked by combat. Re-queuing for State 3.")
     end
@@ -359,7 +374,7 @@ end
 function OnQuickstabStart()
     quickstabActive = true
     quickstabQueued = false
-    quickstabRecentlySent = false -- Clear flag on success
+    quickstabRecentlySent = false
     DebugPrint("Quickstab buff is now ACTIVE.")
 end
 
@@ -373,7 +388,7 @@ function ExecuteQuickstab()
     Send("quickstab")
     quickstabQueued = false
     
-    -- Safety: If no response in 2 seconds, assume it didn't hit combat and clear the flag
+    -- Safety: reset flag after 2s if no response seen
     DoAfterSpecial(2, 'quickstabRecentlySent = false', 12)
     
     ColourNote(SUCCESS, "", "[Aardwolf QoL] Executing: quickstab")
