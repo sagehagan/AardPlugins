@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+
+<muclient>
+<plugin
+   name="GMCP_Monitor"
+   author="Assistant"
+   id="e8a1f2b3c4d5e6f7a8b9c0d1"
+   language="Lua"
+   purpose="Prints all incoming GMCP data to the output window"
+   save_state="y"
+   date_written="2026-01-21"
+   version="1.0"
+   >
+</plugin>
+
+<script>
+<![CDATA[
+--[[
+    Standard GMCP Handler IDs:
+    - Nick Gammon's: 3e7dedbe37e44942dd46d264
+    - Discworld/rgrams: c190b5fc9e83b05d8de996c3
+--]]
+
+local HANDLER_IDS = {
+    ["3e7dedbe37e44942dd46d264"] = "Standard Handler",
+    ["c190b5fc9e83b05d8de996c3"] = "Discworld Handler"
+}
+
+function OnPluginBroadcast(msg, id, name, text)
+    -- Check if the broadcast is coming from a known GMCP handler
+    if HANDLER_IDS[id] then
+        -- text usually contains the GMCP message name and the JSON data
+        -- Example: "char.vitals { \"hp\": 100, \"mp\": 50 }"
+        
+        ColourNote("cyan", "", "[GMCP] ", "white", "", text)
+    end
+end
+
+function OnPluginInstall()
+    Note("GMCP Monitor Installed. Now listening for events from your GMCP Handler...")
+end
+]]>
+</script>
+</muclient>

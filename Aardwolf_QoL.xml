@@ -9,9 +9,9 @@
    language="Lua"
    purpose="Improving Aardwolf QoL"
    save_state="y"
-   date_written="2026-01-22 18:41:00"
+   date_written="2026-01-22 20:05:00"
    requires="5.06"
-   version="2.4"
+   version="3.9"
    >
 <description trim="y">
 <![CDATA[
@@ -20,8 +20,10 @@ Author: Heracles
 
 Features:
 - Categorized UI (Universal & Thief)
-- Automatic Sanctuary Protection
-- Thief Quickstab tracking with intelligent combat and failure recovery
+- Bullet-Proof Gear Tracking: Monitors item strings (e.g., 'A Mist of Blood') to track equipment state.
+- Precision Sanctuary tracking via Affect ID 71 ({affon}/{affoff})
+- Automatic Aura Protection during combat transitions
+- Thief Quickstab tracking, queuing, and combat-interruption recovery
 - Active GMCP State Monitoring with Fail-safe Parsing
 - Professional Colorful UI and Debug Suite
 ]]>
@@ -37,6 +39,46 @@ Features:
    send_to="12"
    sequence="100"
    script="OnSancCast"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^\{affon\}71.*$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnSancSpellOn"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^\{affoff\}71.*$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnSancSpellOff"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^(.+) begins floating around you\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnItemWorn"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="^(.+) stops floating around you\.$"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+   script="OnItemRemoved"
   >
   </trigger>
 
@@ -123,8 +165,8 @@ Features:
 
 <aliases>
   <alias match="qol help" enabled="y" send_to="12" sequence="100" script="ShowHelp"></alias>
-  <alias match="^qol setfloat (.*)$" enabled="y" regexp="y" send_to="12" sequence="100" script="Set_Float_ID"></alias>
-  <alias match="^qol setaura (.*)$" enabled="y" regexp="y" send_to="12" sequence="100" script="Set_Aura_ID"></alias>
+  <alias match="^qol setfloat (.*)$" enabled="y" regexp="y" send_to="12" sequence="1" script="Set_Float_ID"></alias>
+  <alias match="^qol setaura (.*)$" enabled="y" regexp="y" send_to="12" sequence="1" script="Set_Aura_ID"></alias>
   <alias match="qol status" enabled="y" send_to="12" sequence="100" script="CheckStatus"></alias>
   <alias match="qol debug" enabled="y" send_to="12" sequence="100" script="ToggleDebug"></alias>
 </aliases>
@@ -135,15 +177,22 @@ require "json"
 
 -- Configuration variables (Persisted)
 local floatID = GetVariable("floatID") or ""
+local floatName = GetVariable("floatName") or ""
 local auraID = GetVariable("auraID") or ""
+local auraName = GetVariable("auraName") or ""
 local debugMode = (GetVariable("debugMode") == "1")
 
 -- State variables (Volatile)
 local currentState = 0
-local pendingCommand = ""
+local sancSpellActive = false
+local pendingSancAction = false
 local quickstabQueued = false
 local quickstabActive = false
 local quickstabRecentlySent = false
+
+-- Gear Tracking (Driven by Trigger strings)
+local wearingFloat = false
+local wearingAura = false
 
 -- The ID of the Aardwolf GMCP Handler plugin
 local GMCP_PLUGIN_ID = "3e7dedbe37e44942dd46d264"
@@ -164,7 +213,9 @@ end
 
 function OnPluginSaveState()
     SetVariable("floatID", floatID)
+    SetVariable("floatName", floatName)
     SetVariable("auraID", auraID)
+    SetVariable("auraName", auraName)
     SetVariable("debugMode", debugMode and "1" or "0")
 end
 
@@ -181,12 +232,12 @@ function ShowHelp()
     ColourNote(ACCENT, "", "\n [ Universal Features ]")
     local u_cmds = {
         {cmd = "qol status",       desc = "Displays configuration, state, and buff status."},
-        {cmd = "qol setfloat <id>", desc = "Sets Float Item ID (for Sanctuary)."},
-        {cmd = "qol setaura <id>",  desc = "Sets Aura Item ID (Standard gear)."},
+        {cmd = "qol setfloat <id> <name>", desc = "Sets Float ID and Item String (e.g. a Mist of Blood)."},
+        {cmd = "qol setaura <id> <name>",  desc = "Sets Aura ID and Item String (e.g. Aardwolf Aura of Sanctuary)."},
         {cmd = "qol help",         desc = "Displays this menu."}
     }
     for _, v in ipairs(u_cmds) do
-        ColourTell(HIGHLIGHT, "", string.format("  %-18s", v.cmd))
+        ColourTell(HIGHLIGHT, "", string.format("  %-25s", v.cmd))
         ColourNote(SECONDARY, "", " : " .. v.desc)
     end
 
@@ -205,16 +256,8 @@ end
 
 function CheckStatus()
     local state_color = (currentState == 3 or currentState == 8) and SUCCESS or WARN
-    local qs_status_text = "Faded"
-    local qs_color = WARN
-    
-    if quickstabQueued then
-        qs_status_text = "QUEUED (Pending State 3)"
-        qs_color = HIGHLIGHT
-    elseif quickstabActive then
-        qs_status_text = "ACTIVE"
-        qs_color = SUCCESS
-    end
+    local qs_status_text = (quickstabQueued and "QUEUED" or (quickstabActive and "ACTIVE" or "Faded"))
+    local qs_color = (quickstabQueued and HIGHLIGHT or (quickstabActive and SUCCESS or WARN))
 
     print("")
     ColourNote(PRIMARY, "", "--------------------------------------------------------------------------------")
@@ -224,9 +267,11 @@ function CheckStatus()
     ColourTell(SECONDARY, "", "  Current State:     ") ColourNote(state_color, "", tostring(currentState))
     
     ColourNote(ACCENT, "", "\n [ Universal Features: Sanctuary ]")
-    ColourTell(SECONDARY, "", "  Float Item ID:     ") ColourNote(floatID ~= "" and SUCCESS or WARN, "", (floatID ~= "" and floatID or "NOT SET"))
-    ColourTell(SECONDARY, "", "  Aura Item ID:      ") ColourNote(auraID ~= "" and SUCCESS or WARN, "", (auraID ~= "" and auraID or "NOT SET"))
-    ColourTell(SECONDARY, "", "  Sanc Gear Queue:   ") ColourNote(pendingCommand ~= "" and HIGHLIGHT or SECONDARY, "", (pendingCommand ~= "" and pendingCommand or "None"))
+    ColourTell(SECONDARY, "", "  Spell Status:      ") ColourNote(sancSpellActive and SUCCESS or WARN, "", (sancSpellActive and "ON (Casted)" or "OFF (Missing)"))
+    ColourTell(SECONDARY, "", "  Float Item:        ") ColourNote(floatID ~= "" and SUCCESS or WARN, "", string.format("%s (%s)", floatID, floatName))
+    ColourTell(SECONDARY, "", "  Aura Item:         ") ColourNote(auraID ~= "" and SUCCESS or WARN, "", string.format("%s (%s)", auraID, auraName))
+    ColourTell(SECONDARY, "", "  Current Gear:      ") ColourNote(HIGHLIGHT, "", (wearingFloat and "Wearing Float" or (wearingAura and "Wearing Aura" or "Other/Unknown")))
+    ColourTell(SECONDARY, "", "  Pending Action:    ") ColourNote(pendingSancAction and HIGHLIGHT or SECONDARY, "", (pendingSancAction and "YES (Waiting for State 3)" or "None"))
 
     ColourNote(ACCENT, "", "\n [ Thief Features: Quickstab ]")
     ColourTell(SECONDARY, "", "  Quickstab Status:  ") ColourNote(qs_color, "", qs_status_text)
@@ -273,75 +318,134 @@ function UpdateStateFromGMCP()
         if new_state then
             local old_state = currentState
             currentState = tonumber(new_state)
-            
             if old_state ~= currentState then
                 DebugPrint("State change: " .. old_state .. " -> " .. currentState)
-                
-                -- Release Sanc Queue (State 3 or 8)
-                if (currentState == 3 or currentState == 8) and pendingCommand ~= "" then
-                    ExecuteQueuedCommand()
-                end
-                
-                -- Release Quickstab Queue (Strictly State 3)
-                if currentState == 3 and quickstabQueued then
-                    ExecuteQuickstab()
-                end
+                if currentState == 3 and pendingSancAction then ExecuteSanc() end
+                if currentState == 3 and quickstabQueued then ExecuteQuickstab() end
             end
         end
     end
 end
 
 -------------------------------------------------------------------------
--- Handlers: Universal
+-- Gear String Tracking (Case-Insensitive Match)
+-------------------------------------------------------------------------
+
+function OnItemWorn(n, l, w)
+    local itemName = string.lower(w[1])
+    if itemName == string.lower(floatName) then
+        wearingFloat = true; wearingAura = false
+        DebugPrint("Detected: Float gear equipped.")
+    elseif itemName == string.lower(auraName) then
+        wearingAura = true; wearingFloat = false
+        DebugPrint("Detected: Aura gear equipped.")
+    end
+end
+
+function OnItemRemoved(n, l, w)
+    local itemName = string.lower(w[1])
+    if itemName == string.lower(floatName) then
+        wearingFloat = false
+        DebugPrint("Detected: Float gear removed.")
+    elseif itemName == string.lower(auraName) then
+        wearingAura = false
+        DebugPrint("Detected: Aura gear removed.")
+    end
+end
+
+-------------------------------------------------------------------------
+-- Handlers: Universal (Sanctuary)
 -------------------------------------------------------------------------
 
 function Set_Float_ID(n, l, w)
-    floatID = w[1]
-    ColourNote(SUCCESS, "", "[Aardwolf QoL] Float ID set to: " .. floatID)
-    SaveState()
+    local input = w[1]
+    local id, name = string.match(input, "^(%S+)%s+(.*)$")
+    if id and name then
+        floatID = id
+        floatName = name
+        ColourNote(SUCCESS, "", string.format("[Aardwolf QoL] Float Item set: %s (%s)", floatID, floatName))
+        SaveState()
+    else
+        ColourNote(WARN, "", "[Aardwolf QoL] Usage: qol setfloat <id> <name>")
+    end
 end
 
 function Set_Aura_ID(n, l, w)
-    auraID = w[1]
-    ColourNote(SUCCESS, "", "[Aardwolf QoL] Aura ID set to: " .. auraID)
-    SaveState()
+    local input = w[1]
+    local id, name = string.match(input, "^(%S+)%s+(.*)$")
+    if id and name then
+        auraID = id
+        auraName = name
+        ColourNote(SUCCESS, "", string.format("[Aardwolf QoL] Aura Item set: %s (%s)", auraID, auraName))
+        SaveState()
+    else
+        ColourNote(WARN, "", "[Aardwolf QoL] Usage: qol setaura <id> <name>")
+    end
+end
+
+function SmartWearFloat()
+    if floatID ~= "" and not wearingFloat then Send("wear " .. floatID) end
+end
+
+function SmartWearAura()
+    if auraID ~= "" and not wearingAura then Send("wear " .. auraID) end
+end
+
+function OnSancSpellOn() 
+    sancSpellActive = true
+    DebugPrint("Sanctuary Spell (71) confirmed ACTIVE.")
+end
+
+function OnSancSpellOff() 
+    sancSpellActive = false
+    DebugPrint("Sanctuary Spell (71) confirmed OFF.")
+    HandleSancLoss()
 end
 
 function OnSancCast()
-    if floatID == "" then return end
-    QueueOrSend("wear " .. floatID)
+    sancSpellActive = true
+    SmartWearFloat()
+    pendingSancAction = false
 end
 
 function OnSancFall()
-    if auraID == "" then return end
-    QueueOrSend("wear " .. auraID)
+    if sancSpellActive then
+        sancSpellActive = false
+        HandleSancLoss()
+    end
+end
+
+function HandleSancLoss()
+    if currentState == 8 then
+        SmartWearAura()
+        pendingSancAction = true
+    elseif currentState == 3 then
+        ExecuteSanc()
+    else
+        pendingSancAction = true
+    end
 end
 
 function OnAlreadyInSanc()
-    if currentState == 3 and floatID ~= "" then
-        Send("wear " .. floatID)
-        Send("cast 'sanctuary'")
+    if sancSpellActive then
+        DebugPrint("Already in Sanc: Spell active. Syncing gear.")
+        pendingSancAction = false
+        SmartWearFloat()
+    else
+        DebugPrint("Already in Sanc: Spell (71) missing (Aura gear only). Queuing cast for State 3.")
+        if currentState == 3 then ExecuteSanc() else pendingSancAction = true end
     end
 end
 
 function OnSancConcentrationFail()
-    if floatID ~= "" then Send("wear " .. floatID) end
+    if currentState == 8 then SmartWearAura() end
+    pendingSancAction = true
 end
 
-function QueueOrSend(cmd)
-    if currentState == 3 or currentState == 8 then
-        Send(cmd)
-        pendingCommand = ""
-    else
-        pendingCommand = cmd
-        ColourNote(HIGHLIGHT, "", "[Aardwolf QoL] State " .. currentState .. " restricted. Queued: " .. cmd)
-    end
-end
-
-function ExecuteQueuedCommand()
-    Send(pendingCommand)
-    ColourNote(SUCCESS, "", "[Aardwolf QoL] Sanc Queue released: " .. pendingCommand)
-    pendingCommand = ""
+function ExecuteSanc()
+    SmartWearFloat()
+    Send("cast 'sanctuary'")
+    pendingSancAction = false
 end
 
 -------------------------------------------------------------------------
@@ -349,48 +453,28 @@ end
 -------------------------------------------------------------------------
 
 function OnQuickstabReset()
-    if currentState == 3 then
-        ExecuteQuickstab()
-    else
-        quickstabQueued = true
-        DebugPrint("Quickstab reset. Queued for next State 3.")
-    end
+    if currentState == 3 then ExecuteQuickstab() else quickstabQueued = true end
 end
 
 function OnQuickstabFail()
-    DebugPrint("Quickstab focus failure detected. Retrying...")
+    DebugPrint("Quickstab focus failure. Retrying...")
     ExecuteQuickstab()
 end
 
 function OnQuickstabCombatFail()
     if quickstabRecentlySent and not quickstabActive then
-        quickstabQueued = true
-        quickstabRecentlySent = false
-        DebugPrint("Quickstab blocked by combat. Re-queuing for State 3.")
-        ColourNote(WARN, "", "[Aardwolf QoL] Quickstab blocked by combat. Re-queuing for State 3.")
+        quickstabQueued = true; quickstabRecentlySent = false
+        DebugPrint("Quickstab blocked by combat. Re-queuing.")
     end
 end
 
-function OnQuickstabStart()
-    quickstabActive = true
-    quickstabQueued = false
-    quickstabRecentlySent = false
-    DebugPrint("Quickstab buff is now ACTIVE.")
-end
-
-function OnQuickstabFade()
-    quickstabActive = false
-    DebugPrint("Quickstab buff has FADED.")
-end
+function OnQuickstabStart() quickstabActive, quickstabQueued, quickstabRecentlySent = true, false, false end
+function OnQuickstabFade() quickstabActive = false end
 
 function ExecuteQuickstab()
-    quickstabRecentlySent = true
+    quickstabRecentlySent, quickstabQueued = true, false
     Send("quickstab")
-    quickstabQueued = false
-    
-    -- Safety: reset flag after 2s if no response seen
     DoAfterSpecial(2, 'quickstabRecentlySent = false', 12)
-    
     ColourNote(SUCCESS, "", "[Aardwolf QoL] Executing: quickstab")
 end
 

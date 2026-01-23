@@ -9,20 +9,20 @@
     language="Lua" 
     purpose="Automatic Spell/Skill Casting" 
     save_state="y" 
-    version="8.6">
+    version="8.9">
   </plugin>
 
   <triggers>
     <trigger 
       enabled="y" 
-      match="^.*Your (?&lt;keyword&gt;\S+) .+$" 
+      match="^.*Your (?<keyword>\S+) .+$" 
       regexp="y" 
       script="RecastHandler" 
       sequence="100" 
     />
     <trigger 
       enabled="y" 
-      match="^.* is unaffected by your (?&lt;keyword&gt;[^ .!]+).*$" 
+      match="^.* is unaffected by your (?<keyword>[^ .!]+).*$" 
       regexp="y" 
       script="ImmunityTrigger" 
       sequence="90" 
@@ -37,14 +37,15 @@
   </triggers>
 
   <aliases>
-    <alias match="^ac +(?&lt;trig&gt;\S+) +(?&lt;skill&gt;.+)$" enabled="y" regexp="y" script="AliasHandler" sequence="10" />
-    <alias match="^acalt +(?&lt;trig&gt;\S+) +(?&lt;skill&gt;.+)$" enabled="y" regexp="y" script="AliasHandler" sequence="10" />
+    <alias match="^ac +(?<trig>\S+) +(?<skill>.+)$" enabled="y" regexp="y" script="AliasHandler" sequence="10" />
+    <alias match="^ac +none$" enabled="y" regexp="y" script="AliasHandler" sequence="9" />
+    <alias match="^acalt +(?<trig>\S+) +(?<skill>.+)$" enabled="y" regexp="y" script="AliasHandler" sequence="10" />
     <alias match="^acalt +none$" enabled="y" regexp="y" script="AliasHandler" sequence="9" />
-    <alias match="^acopen(?: +(?&lt;cmd&gt;.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
-    <alias match="^acheal(?: +(?&lt;cmd&gt;.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
+    <alias match="^acopen(?: +(?<cmd>.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
+    <alias match="^acheal(?: +(?<cmd>.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acconsume$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acstab$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
-    <alias match="^acquaff(?: +(?&lt;type&gt;hp|mn|mv) +(?&lt;pct&gt;\d+) +(?&lt;cnt&gt;\d+))?$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
+    <alias match="^acquaff(?: +(?<type>hp|mn|mv) +(?<pct>\d+) +(?<cnt>\d+))?$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
     <alias match="^acquaff$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
     <alias match="^ac debug$" enabled="y" regexp="y" script="ToggleDebug" sequence="20" />
     <alias match="^ac$" enabled="y" regexp="y" script="AliasHandler" sequence="100" />
@@ -145,7 +146,10 @@
     function DeathHandler(name, line, wildcards)
         if Caster.subclass:lower() == "ninja" then
             Caster.can_backstab = true
-            if debug_mode then Caster.log("Mob Dead: Resetting Backstab Flag.", "lime") end
+            if Caster.cfg.stab_on and Caster.is_fighting then
+               Execute("backstab")
+               if debug_mode then Caster.log("Mob Dead: Sending follow-up Backstab.", "lime") end
+            end
         end
     end
 
@@ -161,13 +165,16 @@
         end
 
         local skill = Caster.using_alt and Caster.cfg.alt or Caster.cfg.primary
-        if skill ~= "" then
-            if Caster.subclass:lower() == "ninja" and Caster.cfg.stab_on and Caster.can_backstab then
+        
+        if Caster.subclass:lower() == "ninja" and Caster.cfg.stab_on and Caster.can_backstab then
+            Caster.can_backstab = false
+            if skill ~= "" then
                 Execute("backstab;" .. skill)
-                Caster.can_backstab = false
             else
-                Execute(skill)
+                Execute("backstab")
             end
+        elseif skill ~= "" then
+            Execute(skill)
         end
     end
 
@@ -260,6 +267,10 @@
             Caster.cfg.alt_trig = wildcards.trig; Caster.cfg.alt = wildcards.skill
             SetVariable("alt_trig", wildcards.trig); SetVariable("alt", wildcards.skill)
             Caster.log("ALT SET: Trigger [" .. wildcards.trig .. "] -> Skill [" .. wildcards.skill .. "]", "orange")
+        elseif cmd:find("^ac +none") then
+            Caster.cfg.pri_trig = ""; Caster.cfg.primary = ""
+            SetVariable("pri_trig", ""); SetVariable("primary", "")
+            Caster.log("Primary settings cleared.", "lime")
         elseif cmd:find("^ac +") then
             Caster.cfg.pri_trig = wildcards.trig; Caster.cfg.primary = wildcards.skill
             SetVariable("pri_trig", wildcards.trig); SetVariable("primary", wildcards.skill)
@@ -294,7 +305,7 @@
         local function status_tag(b) return b and "[ ACTIVE ]" or "[ INACTIVE ]", b and "lime" or "red" end
         local function val_tag(v) return v ~= "" and v or "Not Set", v ~= "" and "yellow" or "gray" end
         ColourNote("silver", "", "======================================================================")
-        ColourTell("cyan", "", " [ CASTER SYSTEM v8.4 ]") 
+        ColourTell("cyan", "", " [ CASTER SYSTEM v8.9 ]") 
         local p, pc = status_tag(Caster.enabled)
         ColourTell("silver", "", " Status: ") ColourNote(pc, "", p)
         
@@ -302,7 +313,6 @@
         ColourTell("magenta", "", string.format("%-14s", Caster.subclass))
         ColourNote("silver", "", "Recast Speed: " .. Caster.recast_speed .. "s")
         
-        -- Ninja Backstab UI Logic
         ColourTell("silver", "", "    Backstab Mode:  ")
         if Caster.subclass:lower() == "ninja" then
             local onoff, oncol = Caster.cfg.stab_on and "[ ENABLED ]" or "[ DISABLED ]", Caster.cfg.stab_on and "lime" or "red"
@@ -346,6 +356,7 @@
         ColourNote("cyan", "", " [ AUTO-CASTER COMMAND REFERENCE ]")
         Note("")
         ColourTell("yellow", "", " ac <trig> <skill>    ") ColourNote("silver", "", "Set primary recast trigger and command.")
+        ColourTell("yellow", "", " ac none              ") ColourNote("silver", "", "Clear the primary loop settings.")
         ColourTell("orange", "", " acalt <trig> <skill> ") ColourNote("silver", "", "Set fallback trigger/command for immunity.")
         ColourTell("orange", "", " acalt none           ") ColourNote("silver", "", "Clear the alternate fallback loop.")
         ColourTell("yellow", "", " ac                   ") ColourNote("silver", "", "Toggle main plugin power.")
@@ -364,23 +375,19 @@
         ColourNote("silver", "", " EXAMPLES:")
         Note("    ac fury cast 626                 - Matches 'Your fury'")
         Note("    acalt bone-crunching c 358       - Matches 'Your bone-crunching'")
-        Note("    ac piercing cast 574             - Matches 'Your piercing'")
-        Note("    ac spiraling spiral              - Matches 'Your spiraling'")
+        Note("    ac none                          - Disables the primary recast skill.")
         Note("    acopen cast 574                  - Fires heavenly smiting once at combat start.")
-        Note("    acheal cast 146 Heracles         - Fires regen once at combat end. Remove target to heal self.")
+        Note("    acheal cast 146 Heracles         - Fires regen once at combat end.")
         Note("    acquaff hp 40 3                  - Quaffs 3 heals when HP falls below 40%.")
         Note("")
         ColourNote("red", "", " Auto Quaff requires Durel's Inventory Plugin")
-        ColourNote("red", "", "   - dinv consume must be confingured for heal/mana/move")
         Note("")
         ColourNote("silver", "", " LOGIC & SAFETY:")
-        Note(" 1. START: Fires Opener then immediately fires Primary Skill.")
+        Note(" 1. START: Fires Opener then leads with Backstab + Primary Skill.")
         Note(" 2. RECAST: Fires ONLY when damage word (trig) is detected.")
-        Note(" 3. COOLDOWN: 2.0s delay (0.5s for Navigators).")
-        Note(" 4. NINJA: Lead with Backstab once per target (Resets on 'DEAD!!').")
-        Note(" 5. IMMUNITY: Swaps to Alt or shuts down if unaffected.")
-        Note(" 6. QUAFF: Stops casting for 3s per quaff.")
-        Note(" 7. SHUTDOWN: Re-enables at combat end if disabled by immunity.")
+        Note(" 3. NINJA: Backstabs once at start, then every time a mob dies while fighting.")
+        Note(" 4. IMMUNITY: Swaps to Alt or shuts down if unaffected.")
+        Note(" 5. QUAFF: Stops casting for 3s per quaff.")
         Note("")
         ColourNote("red", "", " Ninjas should use spiraling / spiral for primary skill - Backstab logic built in.")
         ColourNote("silver", "", "----------------------------------------------------------------------")
