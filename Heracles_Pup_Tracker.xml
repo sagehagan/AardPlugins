@@ -10,7 +10,7 @@
   save_state="y"
   date_written="2026-01-23"
   requires="5.06"
-  version="14.7"
+  version="15.0"
   >
 </plugin>
 
@@ -67,6 +67,40 @@ local fiveMinStats = { pups = 0, trains = 0, gold = 0, times = {} }
 
 local newPup = { trains = 0, bonus = 0, kills = 0, gold = 0 }
 
+-- UTILITY FUNCTIONS
+function CommaValue(n)
+    local f = tostring(math.floor(math.abs(n)))
+    local sign = n < 0 and "-" or ""
+    while true do f, k = string.gsub(f, "^(-?%d+)(%d%d%d)", '%1,%2'); if (k==0) then break end end
+    return sign .. f
+end
+
+function FormatGold(v)
+    local sign = v < 0 and "-" or ""
+    local val = math.abs(v)
+    if val >= 1000000 then return sign .. string.format("%.2fM", val/1000000)
+    elseif val >= 10000 then return sign .. string.format("%.1fK", val/1000)
+    else return CommaValue(v) end
+end
+
+function FormatSeconds(s)
+    s = math.floor(s)
+    local m = math.floor(s/60)
+    if m > 0 then return string.format("%02dm %02ds", m, s%60) end
+    return string.format("%02ds", s)
+end
+
+function Pad(v, len)
+    local str = tostring(v)
+    return string.rep(" ", math.max(0, len - #str)) .. str
+end
+
+function GetLine(label, pups, trains, gold, avg)
+    return string.format("@C%-11s @R| @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+           label, Pad(CommaValue(pups), 6), Pad(CommaValue(trains), 6), Pad(FormatGold(gold), 7), FormatSeconds(avg or 0))
+end
+
+-- TRACKING LOGIC
 function ToggleDebug()
     debug_mode = not debug_mode
     AnsiNote("@R[ @WHeracles @R] @DDebug Mode: " .. (debug_mode and "@GENABLED" or "@RDISABLED"))
@@ -135,6 +169,30 @@ function AdjustGold(amt)
     DebugMsg(string.format("@CPup Gold: @W%s @R| @CDaily Gold: @W%s", CommaValue(newPup.gold), CommaValue(t_gold)))
 end
 
+-- HISTORY AND DATE LOGIC
+function GetESTDate()
+    local utc_time = os.time(os.date("!*t"))
+    local est_offset = 5 * 3600
+    return os.date("%d %b %Y", utc_time - est_offset)
+end
+
+function CleanDate(s)
+    local month_map = {["01"]="Jan",["02"]="Feb",["03"]="Mar",["04"]="Apr",["05"]="May",["06"]="Jun",["07"]="Jul",["08"]="Aug",["09"]="Sep",["10"]="Oct",["11"]="Nov",["12"]="Dec"}
+    local d,m,y = s:match("^(%d%d) (%d%d) (%d%d%d%d)$")
+    if d and m and y then return d.." "..month_map[m].." "..y end
+    return s
+end
+
+function GetFullSet()
+    local full = {}
+    for _,v in ipairs(daily_archive) do table.insert(full, v) end
+    local sTime = 0; for _,v in ipairs(today_times) do sTime = sTime + v end
+    local avgToday = (#today_times > 0) and (sTime / #today_times) or 0
+    table.insert(full, { date = t_date, pups = t_pups, trains = t_trains, gold = t_gold, avg = avgToday, time_count = #today_times })
+    return full
+end
+
+-- CORE REPORTING FUNCTIONS
 function ShowGoldSummary()
     local function GetPerc(v)
         if t_gold <= 0 then return "0" end
@@ -161,82 +219,62 @@ function ShowGoldSummary()
     AnsiNote("@R" .. string.rep("-", 80))
 end
 
-function TmrPulse(name)
-    local currDate = GetESTDate()
-    if t_date ~= currDate then
-        local sTime = 0; for _,v in ipairs(today_times) do sTime = sTime + v end
-        local avgToday = (#today_times > 0) and (sTime / #today_times) or 0
-        local final_report = string.format("@R[@WFINAL SUMMARY: %s@R] @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                             t_date, CommaValue(t_pups), CommaValue(t_trains), CommaValue(t_gold), FormatSeconds(avgToday))
-                             
-        if rep_chan == "print" then AnsiNote(final_report)
-        elseif rep_chan ~= "none" then Execute(rep_chan .. " " .. final_report) end
-        
-        if log_tab ~= "" then CallPlugin("b555825a4a5700c35fa80780", "storeFromOutside", StylesToColours(final_report), log_tab) end
-        
-        table.insert(daily_archive, { date = t_date, pups = t_pups, trains = t_trains, gold = t_gold, avg = avgToday, time_count = #today_times })
-        if #daily_archive > 30 then table.remove(daily_archive, 1) end
-        
-        t_date = currDate; t_trains, t_pups, t_gold = 0, 0, 0
-        g_corpse, g_crumble, g_split, g_sac, g_sell, g_haggle = 0, 0, 0, 0, 0, 0
-        history, today_times = {}, {}; SaveState()
+function ShowDailyHistory(name, line, wildcards)
+    local full = GetFullSet(); local count = math.min(tonumber(wildcards[1]), #full)
+    PrintHeader("DAILY BREAKDOWN (LAST " .. count .. " DAYS)")
+    for i = #full, #full - count + 1, -1 do
+        local d = full[i]
+        AnsiNote(GetLine(d.date, d.pups, d.trains, d.gold, d.avg))
     end
-    if report_active and os.time() - report_start_time >= 300 then ExecuteReport() end
+    AnsiNote("@R" .. string.rep("-", 80))
 end
 
-function GetESTDate()
-    local utc_time = os.time(os.date("!*t"))
-    local est_offset = 5 * 3600
-    return os.date("%d %b %Y", utc_time - est_offset)
+function ShowDailyRange(name, line, wildcards)
+    local sDate, eDate = CleanDate(wildcards[1]), CleanDate(wildcards[2])
+    local full, results, inRange = GetFullSet(), {}, false
+    for _, d in ipairs(full) do
+        if CleanDate(d.date) == sDate then inRange = true end
+        if inRange then table.insert(results, d) end
+        if CleanDate(d.date) == eDate then inRange = false end
+    end
+    PrintHeader("DAILY RANGE (" .. sDate .. " to " .. eDate .. ")")
+    for i = #results, 1, -1 do
+        local d = results[i]
+        AnsiNote(GetLine(d.date, d.pups, d.trains, d.gold, d.avg))
+    end
+    AnsiNote("@R" .. string.rep("-", 80))
 end
 
-function OnPluginInstall()
-    t_date = GetESTDate()
-    t_trains = tonumber(GetVariable("today_trains")) or 0
-    t_pups = tonumber(GetVariable("today_pups")) or 0
-    t_gold = tonumber(GetVariable("today_gold")) or 0
-    g_corpse = tonumber(GetVariable("g_corpse")) or 0
-    g_crumble = tonumber(GetVariable("g_crumble")) or 0
-    g_split = tonumber(GetVariable("g_split")) or 0
-    g_sac = tonumber(GetVariable("g_sac")) or 0
-    g_sell = tonumber(GetVariable("g_sell")) or 0
-    g_haggle = tonumber(GetVariable("g_haggle")) or 0
-    rep_chan = GetVariable("repchan") or "print"
-    log_tab = GetVariable("log_tab") or ""
-    debug_mode = (GetVariable("debug_mode") == "y")
-    local h_var = GetVariable("history_table")
-    if h_var and h_var ~= "" then history = loadstring("return " .. h_var)() or {} end
-    local t_var = GetVariable("today_times_table")
-    if t_var and t_var ~= "" then today_times = loadstring("return " .. t_var)() or {} end
-    local a_var = GetVariable("daily_archive")
-    if a_var and a_var ~= "" then daily_archive = loadstring("return " .. a_var)() or {} end
-    last_pup_time = GetInfo(304)
-    AnsiNote("@R[ @WHeracles @R] @DPup Tracker Loaded. Type @Cpt help @Dfor commands")
+function ShowTotalHistory(name, line, wildcards)
+    local full = GetFullSet(); local count = math.min(tonumber(wildcards[1]), #full)
+    local sPups, sTrains, sGold, totalSeconds, totalCount = 0, 0, 0, 0, 0
+    for i = #full, #full - count + 1, -1 do
+        local d = full[i]
+        sPups, sTrains, sGold = sPups + d.pups, sTrains + d.trains, sGold + d.gold
+        totalSeconds = totalSeconds + ((d.avg or 0) * (d.time_count or 0)); totalCount = totalCount + (d.time_count or 0)
+    end
+    PrintHeader("TOTAL SUMMARY (LAST " .. count .. " DAYS)")
+    AnsiNote(GetLine("TOTALS", sPups, sTrains, sGold, (totalCount > 0 and totalSeconds / totalCount or 0)))
+    AnsiNote("@R" .. string.rep("-", 80))
 end
 
-function StylesToColours(str)
-    local color_map = {["@R"]="red",["@G"]="lime",["@B"]="blue",["@Y"]="yellow",["@C"]="cyan",["@W"]="white",["@D"]="gray"}
-    return str:gsub("(@[RGBYCW D])", function(code) return color_map[code] or "@W" end)
-end
-
-function AnsiNote(str)
-    local colors = {["@R"]="red",["@G"]="lime",["@B"]="blue",["@Y"]="yellow",["@C"]="cyan",["@W"]="white",["@D"]="gray"}
-    local current = 1
-    while current <= #str do
-        local start, stop, code = str:find("(@[RGBYCW D])", current)
-        if start then
-            if start > current then ColourTell("white", "", str:sub(current, start - 1)) end
-            local next_tag = str:find("@[RGBYCW D]", stop + 1)
-            local seg_end = (next_tag and next_tag - 1) or #str
-            ColourTell(colors[code] or "white", "", str:sub(stop + 1, seg_end))
-            current = seg_end + 1
-        else
-            ColourTell("white", "", str:sub(current)); break
+function ShowRangeHistory(name, line, wildcards)
+    local sDate, eDate = CleanDate(wildcards[1]), CleanDate(wildcards[2])
+    local full, sPups, sTrains, sGold, totalSeconds, totalCount, inRange = GetFullSet(), 0, 0, 0, 0, 0, false
+    for _, d in ipairs(full) do
+        if CleanDate(d.date) == sDate then inRange = true end
+        if inRange then
+            sPups, sTrains, sGold = sPups + d.pups, sTrains + d.trains, sGold + d.gold
+            totalSeconds = totalSeconds + ((d.avg or 0) * (d.time_count or 0)); totalCount = totalCount + (d.time_count or 0)
         end
+        if CleanDate(d.date) == eDate then inRange = false end
     end
-    Note("")
+    PrintHeader("RANGE SUMMARY (" .. sDate .. " to " .. eDate .. ")")
+    AnsiNote(GetLine("TOTALS", sPups, sTrains, sGold, (totalCount > 0 and totalSeconds / totalCount or 0)))
+    AnsiNote("@R" .. string.rep("-", 80))
 end
 
+-- PUP TRIGGER PROCESSING
 function TrgPup(name, line, w)
     newPup.finishTime = GetInfo(304)
     EnableTriggerGroup("trgLevelInfo", true)
@@ -274,149 +312,49 @@ function TrgFinish(name, line, w)
     end
 end
 
-function GetFullSet()
-    local full = {}
-    for _,v in ipairs(daily_archive) do table.insert(full, v) end
-    local sTime = 0; for _,v in ipairs(today_times) do sTime = sTime + v end
-    local avgToday = (#today_times > 0) and (sTime / #today_times) or 0
-    table.insert(full, { date = t_date, pups = t_pups, trains = t_trains, gold = t_gold, avg = avgToday, time_count = #today_times })
-    return full
-end
-
-function PrintHeader(title)
-    AnsiNote(" "); AnsiNote("@R" .. string.rep("-", 80))
-    AnsiNote("@W" .. string.rep(" ", math.floor((80 - #title)/2)) .. title)
-    AnsiNote("@R" .. string.rep("-", 80))
-end
-
-function ShowDailyHistory(name, line, wildcards)
-    local full = GetFullSet(); local count = math.min(tonumber(wildcards[1]), #full)
-    PrintHeader("DAILY BREAKDOWN (LAST " .. count .. " DAYS)")
-    for i = #full, #full - count + 1, -1 do
-        local d = full[i]
-        AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                 d.date, PadNum(d.pups, 2), PadNum(d.trains, 2), PadGold(d.gold, 7), FormatSeconds(d.avg or 0)))
-    end
-    AnsiNote("@R" .. string.rep("-", 80)); AnsiNote(" ")
-end
-
-function ShowDailyRange(name, line, wildcards)
-    local sDate, eDate = CleanDate(wildcards[1]), CleanDate(wildcards[2])
-    local full, results, inRange = GetFullSet(), {}, false
-    for _, d in ipairs(full) do
-        if CleanDate(d.date) == sDate then inRange = true end
-        if inRange then table.insert(results, d) end
-        if CleanDate(d.date) == eDate then inRange = false end
-    end
-    PrintHeader("DAILY RANGE (" .. sDate .. " to " .. eDate .. ")")
-    if #results == 0 then AnsiNote("@D                           No Data Found for this Date Range")
-    else
-        for i = #results, 1, -1 do
-            local d = results[i]
-            AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                     d.date, PadNum(d.pups, 2), PadNum(d.trains, 2), PadGold(d.gold, 7), FormatSeconds(d.avg or 0)))
-        end
-    end
-    AnsiNote("@R" .. string.rep("-", 80)); AnsiNote(" ")
-end
-
-function ShowTotalHistory(name, line, wildcards)
-    local full = GetFullSet(); local count = math.min(tonumber(wildcards[1]), #full)
-    local sPups, sTrains, sGold, totalSeconds, totalCount = 0, 0, 0, 0, 0
-    for i = #full, #full - count + 1, -1 do
-        local d = full[i]
-        sPups, sTrains, sGold = sPups + d.pups, sTrains + d.trains, sGold + d.gold
-        totalSeconds = totalSeconds + ((d.avg or 0) * (d.time_count or 0)); totalCount = totalCount + (d.time_count or 0)
-    end
-    local grandAvg = (totalCount > 0) and (totalSeconds / totalCount) or 0
-    PrintHeader("TOTAL SUMMARY (LAST " .. count .. " DAYS)")
-    AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-             "TOTALS", CommaValue(sPups), CommaValue(sTrains), CommaValue(sGold), FormatSeconds(grandAvg)))
-    AnsiNote("@R" .. string.rep("-", 80)); AnsiNote(" ")
-end
-
-function ShowRangeHistory(name, line, wildcards)
-    local sDate, eDate = CleanDate(wildcards[1]), CleanDate(wildcards[2])
-    local full, sPups, sTrains, sGold, totalSeconds, totalCount, inRange = GetFullSet(), 0, 0, 0, 0, 0, false
-    for _, d in ipairs(full) do
-        if CleanDate(d.date) == sDate then inRange = true end
-        if inRange then
-            sPups, sTrains, sGold = sPups + d.pups, sTrains + d.trains, sGold + d.gold
-            totalSeconds = totalSeconds + ((d.avg or 0) * (d.time_count or 0)); totalCount = totalCount + (d.time_count or 0)
-        end
-        if CleanDate(d.date) == eDate then inRange = false end
-    end
-    PrintHeader("RANGE SUMMARY (" .. sDate .. " to " .. eDate .. ")")
-    if sPups == 0 then AnsiNote("@D                           No Data Found for this Date Range")
-    else
-        AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                 "TOTALS", CommaValue(sPups), CommaValue(sTrains), CommaValue(sGold), FormatSeconds((totalCount > 0) and (totalSeconds/totalCount) or 0)))
-    end
-    AnsiNote("@R" .. string.rep("-", 80)); AnsiNote(" ")
-end
-
-function CommaValue(n)
-    local f = tostring(math.floor(math.abs(n)))
-    local sign = n < 0 and "-" or ""
-    while true do f, k = string.gsub(f, "^(-?%d+)(%d%d%d)", '%1,%2'); if (k==0) then break end end
-    return sign .. f
-end
-
-function FormatGold(v)
-    local sign = v < 0 and "-" or ""
-    local val = math.abs(v)
-    if val >= 1000000 then return sign .. string.format("%.2fM", val/1000000)
-    elseif val >= 10000 then return sign .. string.format("%.1fK", val/1000)
-    else return CommaValue(v) end
-end
-
-function PadGold(v, len)
-    local str = FormatGold(v)
-    return string.rep(" ", math.max(0, len - #str)) .. str
-end
-
-function PadNum(v, len)
-    local str = CommaValue(v)
-    return string.rep(" ", math.max(0, len - #str)) .. str
-end
-
-function FormatSeconds(s)
-    s = math.floor(s)
-    local m = math.floor(s/60)
-    if m > 0 then return string.format("%dm %02ds", m, s%60) end
-    return string.format("%02ds", s)
-end
-
-function CleanDate(s)
-    local month_map = {["01"]="Jan",["02"]="Feb",["03"]="Mar",["04"]="Apr",["05"]="May",["06"]="Jun",["07"]="Jul",["08"]="Aug",["09"]="Sep",["10"]="Oct",["11"]="Nov",["12"]="Dec"}
-    local d,m,y = s:match("^(%d%d) (%d%d) (%d%d%d%d)$")
-    if d and m and y then return d.." "..month_map[m].." "..y end
-    return s
-end
-
 function BroadcastPup(pTime, totalTrains)
     local s1=0; for _,v in ipairs(history) do s1=s1+v end
     local s2=0; for _,v in ipairs(today_times) do s2=s2+v end
     
     local color_msg = string.format("@R[@DPup: @W%s@R] [@DTime: @W%s@R] [@DAvg: @W%s @DTdy: @W%s@R] [@DMobs: @W%02d@R] [@DTrns: @W%02d @DTdy: @W%s@R] [@DGold: @Y%s @DTdy: @Y%s@R]", 
                       CommaValue(t_pups), FormatSeconds(pTime), FormatSeconds(#history>0 and s1/#history or 0), FormatSeconds(#today_times>0 and s2/#today_times or 0), 
-                      newPup.kills or 0, totalTrains, CommaValue(t_trains), PadGold(newPup.gold or 0, 6), FormatGold(t_gold))
+                      newPup.kills or 0, totalTrains, CommaValue(t_trains), Pad(FormatGold(newPup.gold or 0), 7), FormatGold(t_gold))
                       
     if rep_chan == "print" then AnsiNote(color_msg)
     elseif rep_chan ~= "none" then Execute(rep_chan .. " " .. color_msg) end
     if log_tab ~= "" then CallPlugin("b555825a4a5700c35fa80780", "storeFromOutside", color_msg, log_tab) end
 end
 
+-- TIMER AND SYSTEM HOOKS
+function TmrPulse(name)
+    local currDate = GetESTDate()
+    if t_date ~= currDate then
+        local sTime = 0; for _,v in ipairs(today_times) do sTime = sTime + v end
+        local avgToday = (#today_times > 0) and (sTime / #today_times) or 0
+        local final_report = string.format("@R[@WFINAL SUMMARY: %s@R] @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+                             t_date, CommaValue(t_pups), CommaValue(t_trains), CommaValue(t_gold), FormatSeconds(avgToday))
+                             
+        if rep_chan == "print" then AnsiNote(final_report)
+        elseif rep_chan ~= "none" then Execute(rep_chan .. " " .. final_report) end
+        
+        if log_tab ~= "" then CallPlugin("b555825a4a5700c35fa80780", "storeFromOutside", StylesToColours(final_report), log_tab) end
+        
+        table.insert(daily_archive, { date = t_date, pups = t_pups, trains = t_trains, gold = t_gold, avg = avgToday, time_count = #today_times })
+        if #daily_archive > 30 then table.remove(daily_archive, 1) end
+        
+        t_date = currDate; t_trains, t_pups, t_gold = 0, 0, 0
+        g_corpse, g_crumble, g_split, g_sac, g_sell, g_haggle = 0, 0, 0, 0, 0, 0
+        history, today_times = {}, {}; SaveState()
+    end
+    if report_active and os.time() - report_start_time >= 300 then ExecuteReport() end
+end
+
 function ManualReport(name, line, wildcards)
     local chan = wildcards[1]
     local sTdy = 0; for _,v in ipairs(today_times) do sTdy = sTdy + v end
     local avgTdy = (#today_times > 0) and (sTdy / #today_times) or 0
-    
-    local report = string.format("@R[@WPup Report: %s@R] @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                   t_date, PadNum(t_pups, 2), PadNum(t_trains, 2), PadGold(t_gold, 7), FormatSeconds(avgTdy))
-    
-    if chan == "print" then AnsiNote(report)
-    else Execute(chan .. " " .. report) end
+    local report = GetLine("Pup Report: "..t_date, t_pups, t_trains, t_gold, avgTdy)
+    if chan == "print" then AnsiNote(report) else Execute(chan .. " " .. report) end
 end
 
 function ToggleTrack()
@@ -428,14 +366,39 @@ end
 function ExecuteReport()
     local s = 0; for _,v in ipairs(fiveMinStats.times) do s=s+v end
     local color_body = string.format("@R[@WTRACKER SUMMARY@R] @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                       CommaValue(fiveMinStats.pups), CommaValue(fiveMinStats.trains), PadGold(fiveMinStats.gold, 7), #fiveMinStats.times>0 and FormatSeconds(s/#fiveMinStats.times) or "00s")
+                       Pad(CommaValue(fiveMinStats.pups), 6), Pad(CommaValue(fiveMinStats.trains), 6), Pad(FormatGold(fiveMinStats.gold), 7), #fiveMinStats.times>0 and FormatSeconds(s/#fiveMinStats.times) or "00s")
     if rep_chan == "print" then AnsiNote("@D"..string.rep("-",80)); AnsiNote(color_body); AnsiNote("@D"..string.rep("-",80))
     elseif rep_chan ~= "none" then Execute(rep_chan .. " " .. color_body) end
     fiveMinStats = { pups=0, trains=0, gold=0, times={} }; report_start_time = os.time()
 end
 
+-- PLUGIN INITIALIZATION / SAVE
 function tracker_settings(n,l,w) rep_chan = w[1]; SetVariable("repchan", rep_chan); AnsiNote("@R[ @WHeracles @R] @DOutput Channel: @W"..rep_chan) end
 function tracker_log_settings(n,l,w) log_tab = w[1]=="off" and "" or w[1]; SetVariable("log_tab", log_tab); AnsiNote("@R[ @WHeracles @R] @DLogging to Tab: @W"..(log_tab=="" and "OFF" or log_tab)) end
+
+function OnPluginInstall()
+    t_date = GetESTDate()
+    t_trains = tonumber(GetVariable("today_trains")) or 0
+    t_pups = tonumber(GetVariable("today_pups")) or 0
+    t_gold = tonumber(GetVariable("today_gold")) or 0
+    g_corpse = tonumber(GetVariable("g_corpse")) or 0
+    g_crumble = tonumber(GetVariable("g_crumble")) or 0
+    g_split = tonumber(GetVariable("g_split")) or 0
+    g_sac = tonumber(GetVariable("g_sac")) or 0
+    g_sell = tonumber(GetVariable("g_sell")) or 0
+    g_haggle = tonumber(GetVariable("g_haggle")) or 0
+    rep_chan = GetVariable("repchan") or "print"
+    log_tab = GetVariable("log_tab") or ""
+    debug_mode = (GetVariable("debug_mode") == "y")
+    local h_var = GetVariable("history_table")
+    if h_var and h_var ~= "" then history = loadstring("return " .. h_var)() or {} end
+    local t_var = GetVariable("today_times_table")
+    if t_var and t_var ~= "" then today_times = loadstring("return " .. t_var)() or {} end
+    local a_var = GetVariable("daily_archive")
+    if a_var and a_var ~= "" then daily_archive = loadstring("return " .. a_var)() or {} end
+    last_pup_time = GetInfo(304)
+    AnsiNote("@R[ @WHeracles @R] @DPup Tracker Loaded. Type @Cpt help @Dfor commands")
+end
 
 function OnPluginSaveState()
     SetVariable("today_date", t_date); SetVariable("today_trains", tostring(t_trains))
@@ -447,6 +410,36 @@ function OnPluginSaveState()
     SetVariable("history_table", serialize.save_simple(history))
     SetVariable("today_times_table", serialize.save_simple(today_times))
     SetVariable("daily_archive", serialize.save_simple(daily_archive))
+end
+
+-- DISPLAY AND COLOR HELPERS
+function PrintHeader(title)
+    AnsiNote(" "); AnsiNote("@R" .. string.rep("-", 80))
+    AnsiNote("@W" .. string.rep(" ", math.floor((80 - #title)/2)) .. title)
+    AnsiNote("@R" .. string.rep("-", 80))
+end
+
+function StylesToColours(str)
+    local color_map = {["@R"]="red",["@G"]="lime",["@B"]="blue",["@Y"]="yellow",["@C"]="cyan",["@W"]="white",["@D"]="gray"}
+    return str:gsub("(@[RGBYCW D])", function(code) return color_map[code] or "@W" end)
+end
+
+function AnsiNote(str)
+    local colors = {["@R"]="red",["@G"]="lime",["@B"]="blue",["@Y"]="yellow",["@C"]="cyan",["@W"]="white",["@D"]="gray"}
+    local current = 1
+    while current <= #str do
+        local start, stop, code = str:find("(@[RGBYCW D])", current)
+        if start then
+            if start > current then ColourTell("white", "", str:sub(current, start - 1)) end
+            local next_tag = str:find("@[RGBYCW D]", stop + 1)
+            local seg_end = (next_tag and next_tag - 1) or #str
+            ColourTell(colors[code] or "white", "", str:sub(stop + 1, seg_end))
+            current = seg_end + 1
+        else
+            ColourTell("white", "", str:sub(current)); break
+        end
+    end
+    Note("")
 end
 
 function pt_help()
