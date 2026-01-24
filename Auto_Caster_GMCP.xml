@@ -56,6 +56,7 @@
   <script>
     <![CDATA[
     local GMCP_ID = "3e7dedbe37e44942dd46d264"
+    local INV_ID = "8286a63630f9d997678f28d6"
     local debug_mode = (GetVariable("debug_mode") or "0") == "1"
     
     local Caster = {
@@ -87,9 +88,9 @@
         },
 
         vitals = {
-            hp = { pct = tonumber(GetVariable("hp_pct")) or 50, cnt = tonumber(GetVariable("hp_cnt")) or 2, item = "big heal", key = "hp", max_key = "maxhp" },
-            mn = { pct = tonumber(GetVariable("mn_pct")) or 20, cnt = tonumber(GetVariable("mn_cnt")) or 2, item = "big mana", key = "mana", max_key = "maxmana" },
-            mv = { pct = tonumber(GetVariable("mv_pct")) or 20, cnt = tonumber(GetVariable("mv_cnt")) or 2, item = "big move", key = "moves", max_key = "maxmoves" }
+            hp = { pct = tonumber(GetVariable("hp_pct")) or 50, cnt = tonumber(GetVariable("hp_cnt")) or 2, item = "big heal", key = "hp", max_key = "maxhp", inv_type = "heal" },
+            mn = { pct = tonumber(GetVariable("mn_pct")) or 20, cnt = tonumber(GetVariable("mn_cnt")) or 2, item = "big mana", key = "mana", max_key = "maxmana", inv_type = "mana" },
+            mv = { pct = tonumber(GetVariable("mv_pct")) or 20, cnt = tonumber(GetVariable("mv_cnt")) or 2, item = "big move", key = "moves", max_key = "maxmoves", inv_type = "move" }
         }
     }
 
@@ -232,11 +233,27 @@
             local d = Caster.vitals[k]
             local cur, max = tonumber(current_vitals[d.key]), tonumber(max_vitals[d.max_key] or max_vitals["max"..d.key])
             if cur and max and (cur/max*100) < d.pct then
-                Caster.log("Low " .. k:upper() .. "! Delaying recast 3s.", "yellow")
-                Caster.pause_cast = true
-                for i = 1, d.cnt do Execute("dinv consume " .. d.item) end
-                Caster.last_quaff = now
-                return 
+                
+                -- POTION CHECK START
+                local res, count = CallPlugin(INV_ID, "GetConsumeCount", d.inv_type)
+                if debug_mode then
+                    Caster.log(string.format("Checking %s: Result=%s, Count=%s", d.inv_type, tostring(res), tostring(count)), "cyan")
+                end
+
+                if res == 0 and (tonumber(count) or 0) > 0 then
+                    Caster.log("Low " .. k:upper() .. "! Delaying recast 3s.", "yellow")
+                    Caster.pause_cast = true
+                    for i = 1, d.cnt do Execute("dinv consume " .. d.item) end
+                    Caster.last_quaff = now
+                    return 
+                elseif res == 0 then
+                    Caster.warn("Low " .. k:upper() .. "! No potions available!")
+                    return
+                else
+                    Caster.warn("Potion Check Error: Inventory Plugin Unreachable.")
+                    return
+                end
+                -- POTION CHECK END
             end
         end
     end
@@ -387,7 +404,7 @@
         Note(" 2. RECAST: Fires ONLY when damage word (trig) is detected.")
         Note(" 3. NINJA: Backstabs once at start, then every time a mob dies while fighting.")
         Note(" 4. IMMUNITY: Swaps to Alt or shuts down if unaffected.")
-        Note(" 5. QUAFF: Stops casting for 3s per quaff.")
+        Note(" 5. QUAFF: Checks stock via Aard_Inventory; stops for 3s per quaff.")
         Note("")
         ColourNote("red", "", " Ninjas should use spiraling / spiral for primary skill - Backstab logic built in.")
         ColourNote("silver", "", "----------------------------------------------------------------------")
@@ -426,7 +443,6 @@
         return ""
     end
 
-    -- Initial class check
     Caster.update_subclass()
     Caster.log("@YAuto Caster Ready @DUse @Ccaster help @Dand @Ccaster status @Dfor more info.", "lime")
     ]]>
