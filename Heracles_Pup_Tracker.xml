@@ -10,7 +10,7 @@
   save_state="y"
   date_written="2026-01-23"
   requires="5.06"
-  version="13.0"
+  version="14.4"
   >
 </plugin>
 
@@ -23,7 +23,8 @@
   <alias match="^pt log (.+)$" script="tracker_log_settings" enabled="y" regexp="y" sequence="100" />
   <alias match="^pt debug$" script="ToggleDebug" enabled="y" regexp="y" sequence="100" />
   <alias match="^pt help$" script="pt_help" enabled="y" regexp="y" sequence="100" />
-  <alias match="^pt report$" script="ToggleReport" enabled="y" regexp="y" sequence="100" />
+  <alias match="^pt track$" script="ToggleTrack" enabled="y" regexp="y" sequence="100" />
+  <alias match="^pt report (.+)$" script="ManualReport" enabled="y" regexp="y" sequence="100" />
   <alias match="^pt list (\d+)$" script="ShowDailyHistory" enabled="y" regexp="y" sequence="100" />
   <alias match="^pt list date (.+) to (.+)$" script="ShowDailyRange" enabled="y" regexp="y" sequence="100" />
   <alias match="^pt summary (\d+)$" script="ShowTotalHistory" enabled="y" regexp="y" sequence="100" />
@@ -139,10 +140,16 @@ function TmrPulse(name)
         local sTime = 0; for _,v in ipairs(today_times) do sTime = sTime + v end
         local avgToday = (#today_times > 0) and (sTime / #today_times) or 0
         local final_report = string.format("@R[@WFINAL SUMMARY: %s@R] @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                             t_date, CommaValue(t_pups), CommaValue(t_trains), FormatGold(t_gold), FormatSeconds(avgToday))
+                             t_date, CommaValue(t_pups), CommaValue(t_trains), CommaValue(t_gold), FormatSeconds(avgToday))
+                             
+        if rep_chan == "print" then AnsiNote(final_report)
+        elseif rep_chan ~= "none" then Execute(rep_chan .. " " .. final_report) end
+        
         if log_tab ~= "" then CallPlugin("b555825a4a5700c35fa80780", "storeFromOutside", StylesToColours(final_report), log_tab) end
+        
         table.insert(daily_archive, { date = t_date, pups = t_pups, trains = t_trains, gold = t_gold, avg = avgToday, time_count = #today_times })
         if #daily_archive > 30 then table.remove(daily_archive, 1) end
+        
         t_date = currDate; t_trains, t_pups, t_gold = 0, 0, 0
         g_corpse, g_crumble, g_split, g_sac = 0, 0, 0, 0
         history, today_times = {}, {}; SaveState()
@@ -259,7 +266,7 @@ function ShowDailyHistory(name, line, wildcards)
     for i = #full, #full - count + 1, -1 do
         local d = full[i]
         AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                 d.date, CommaValue(d.pups), CommaValue(d.trains), FormatGold(d.gold), FormatSeconds(d.avg or 0)))
+                 d.date, PadNum(d.pups, 2), PadNum(d.trains, 2), PadGold(d.gold, 7), FormatSeconds(d.avg or 0)))
     end
     AnsiNote("@R" .. string.rep("-", 80)); AnsiNote(" ")
 end
@@ -278,7 +285,7 @@ function ShowDailyRange(name, line, wildcards)
         for i = #results, 1, -1 do
             local d = results[i]
             AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                     d.date, CommaValue(d.pups), CommaValue(d.trains), FormatGold(d.gold), FormatSeconds(d.avg or 0)))
+                     d.date, PadNum(d.pups, 2), PadNum(d.trains, 2), PadGold(d.gold, 7), FormatSeconds(d.avg or 0)))
         end
     end
     AnsiNote("@R" .. string.rep("-", 80)); AnsiNote(" ")
@@ -295,7 +302,7 @@ function ShowTotalHistory(name, line, wildcards)
     local grandAvg = (totalCount > 0) and (totalSeconds / totalCount) or 0
     PrintHeader("TOTAL SUMMARY (LAST " .. count .. " DAYS)")
     AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-             "TOTALS", CommaValue(sPups), CommaValue(sTrains), FormatGold(sGold), FormatSeconds(grandAvg)))
+             "TOTALS", CommaValue(sPups), CommaValue(sTrains), CommaValue(sGold), FormatSeconds(grandAvg)))
     AnsiNote("@R" .. string.rep("-", 80)); AnsiNote(" ")
 end
 
@@ -314,27 +321,41 @@ function ShowRangeHistory(name, line, wildcards)
     if sPups == 0 then AnsiNote("@D                           No Data Found for this Date Range")
     else
         AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                 "TOTALS", CommaValue(sPups), CommaValue(sTrains), FormatGold(sGold), FormatSeconds((totalCount > 0) and (totalSeconds/totalCount) or 0)))
+                 "TOTALS", CommaValue(sPups), CommaValue(sTrains), CommaValue(sGold), FormatSeconds((totalCount > 0) and (totalSeconds/totalCount) or 0)))
     end
     AnsiNote("@R" .. string.rep("-", 80)); AnsiNote(" ")
 end
 
 function CommaValue(n)
-    local f = tostring(n); while true do f, k = string.gsub(f, "^(-?%d+)(%d%d%d)", '%1,%2'); if (k==0) then break end end
-    return f
+    local f = tostring(math.floor(math.abs(n)))
+    local sign = n < 0 and "-" or ""
+    while true do f, k = string.gsub(f, "^(-?%d+)(%d%d%d)", '%1,%2'); if (k==0) then break end end
+    return sign .. f
 end
 
 function FormatGold(v)
     local sign = v < 0 and "-" or ""
-    v = math.abs(v)
-    if v >= 1000000 then return sign .. string.format("%.2fM", v/1000000)
-    elseif v >= 1000 then return sign .. string.format("%.1fK", v/1000)
-    else return sign .. tostring(v) end
+    local val = math.abs(v)
+    if val >= 1000000 then return sign .. string.format("%.2fM", val/1000000)
+    elseif val >= 10000 then return sign .. string.format("%.1fK", val/1000)
+    else return CommaValue(v) end
+end
+
+function PadGold(v, len)
+    local str = FormatGold(v)
+    return string.rep(" ", math.max(0, len - #str)) .. str
+end
+
+function PadNum(v, len)
+    local str = CommaValue(v)
+    return string.rep(" ", math.max(0, len - #str)) .. str
 end
 
 function FormatSeconds(s)
-    s = math.floor(s); local m = math.floor(s/60); if m > 0 then return m.."m ".. (s%60).."s" end
-    return s.."s"
+    s = math.floor(s)
+    local m = math.floor(s/60)
+    if m > 0 then return string.format("%dm %02ds", m, s%60) end
+    return string.format("%02ds", s)
 end
 
 function CleanDate(s)
@@ -347,26 +368,40 @@ end
 function BroadcastPup(pTime, totalTrains)
     local s1=0; for _,v in ipairs(history) do s1=s1+v end
     local s2=0; for _,v in ipairs(today_times) do s2=s2+v end
-    local color_msg = string.format("@R[@DPup: @W%s@R] [@DTime: @W%s@R] [@DAvg: @W%s @DToday: @W%s@R] [@DMobs: @W%d@R] [@DTrns: @W%d @DToday: @W%s@R] [@DGold: @Y%s @DToday: @Y%s@R]", 
+    
+    local color_msg = string.format("@R[@DPup: @W%s@R] [@DTime: @W%s@R] [@DAvg: @W%s @DTdy: @W%s@R] [@DMobs: @W%02d@R] [@DTrns: @W%02d @DTdy: @W%s@R] [@DGold: @Y%s @DTdy: @Y%s@R]", 
                       CommaValue(t_pups), FormatSeconds(pTime), FormatSeconds(#history>0 and s1/#history or 0), FormatSeconds(#today_times>0 and s2/#today_times or 0), 
-                      newPup.kills or 0, totalTrains, CommaValue(t_trains), FormatGold(newPup.gold or 0), FormatGold(t_gold))
+                      newPup.kills or 0, totalTrains, CommaValue(t_trains), PadGold(newPup.gold or 0, 6), FormatGold(t_gold))
+                      
     if rep_chan == "print" then AnsiNote(color_msg)
-    elseif rep_chan ~= "none" then Execute(rep_chan .. " " .. color_msg:gsub("@[RGBYCW D]", "")) end
+    elseif rep_chan ~= "none" then Execute(rep_chan .. " " .. color_msg) end
     if log_tab ~= "" then CallPlugin("b555825a4a5700c35fa80780", "storeFromOutside", color_msg, log_tab) end
 end
 
-function ToggleReport()
+function ManualReport(name, line, wildcards)
+    local chan = wildcards[1]
+    local sTdy = 0; for _,v in ipairs(today_times) do sTdy = sTdy + v end
+    local avgTdy = (#today_times > 0) and (sTdy / #today_times) or 0
+    
+    local report = string.format("@R[@WPup Report: %s@R] @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+                   t_date, PadNum(t_pups, 2), PadNum(t_trains, 2), PadGold(t_gold, 7), FormatSeconds(avgTdy))
+    
+    if chan == "print" then AnsiNote(report)
+    else Execute(chan .. " " .. report) end
+end
+
+function ToggleTrack()
     report_active = not report_active
     if report_active then fiveMinStats = { pups=0, trains=0, gold=0, times={} }; report_start_time = os.time() end
-    AnsiNote("@R[ @WHeracles @R] @G5-Min Report: @W" .. (report_active and "STARTED" or "CANCELED"))
+    AnsiNote("@R[ @WHeracles @R] @GTrack Window: @W" .. (report_active and "STARTED (5-MIN)" or "CANCELED"))
 end
 
 function ExecuteReport()
     local s = 0; for _,v in ipairs(fiveMinStats.times) do s=s+v end
-    local color_body = string.format("@R[@W5-MIN SUMMARY@R] @DPups: @W%d @R| @DTrns: @W%d @R| @DGold: @Y%s @R| @DAvg: @W%ds", 
-                       fiveMinStats.pups, fiveMinStats.trains, FormatGold(fiveMinStats.gold), #fiveMinStats.times>0 and math.floor(s/#fiveMinStats.times) or 0)
+    local color_body = string.format("@R[@WTRACKER SUMMARY@R] @DPups: @W%s @R| @DTrns: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+                       CommaValue(fiveMinStats.pups), CommaValue(fiveMinStats.trains), PadGold(fiveMinStats.gold, 7), #fiveMinStats.times>0 and FormatSeconds(s/#fiveMinStats.times) or "00s")
     if rep_chan == "print" then AnsiNote("@D"..string.rep("-",80)); AnsiNote(color_body); AnsiNote("@D"..string.rep("-",80))
-    elseif rep_chan ~= "none" then Execute(rep_chan .. " " .. color_body:gsub("@[RGBYCW D]", "")) end
+    elseif rep_chan ~= "none" then Execute(rep_chan .. " " .. color_body) end
     fiveMinStats = { pups=0, trains=0, gold=0, times={} }; report_start_time = os.time()
 end
 
@@ -387,14 +422,15 @@ end
 function pt_help()
     PrintHeader("HERACLES PUP TRACKER")
     AnsiNote("  @WSYSTEM COMMANDS")
-    AnsiNote("  @Cpt gold                     @D: Detailed breakdown of gold sources")
-    AnsiNote("  @Cpt chan <channel>           @D: Set output (Ex: @Cgtell@D, @Cclantalk@D, @Cprint@D)")
+    AnsiNote("  @Cpt chan <channel>           @D: Set auto-output (Ex: @Cgtell@D, @Cclantalk@D, @Cprint@D)")
     AnsiNote("  @Cpt log <tab_name>           @D: Redirect output to Comm Log tab (Ex: @CPups@D)")
     AnsiNote("  @Cpt debug                    @D: Toggle verbose loot math (CURRENT: " .. (debug_mode and "@GON" or "@ROFF") .. "@D)")
-    AnsiNote("  @Cpt report                   @D: Toggles a 5-minute stat collection window")
     AnsiNote("  @Cpt help                     @D: Displays this menu")
     AnsiNote(" ")
     AnsiNote("  @WREPORTING COMMANDS")
+    AnsiNote("  @Cpt track                    @D: Start/Stop 5-minute stat window (CURRENT: " .. (report_active and "@GON" or "@ROFF") .. "@D)")
+    AnsiNote("  @Cpt report <channel>         @D: Send manual daily progress report to channel")
+    AnsiNote("  @Cpt gold                     @D: Detailed breakdown of gold sources")
     AnsiNote("  @Cpt list <#>                 @D: Breakdown for last X days. Ex: @Wpt list 7")
     AnsiNote("  @Cpt list date <d1> to <d2>   @D: Range Ex: @Wpt list date 1 Jan 2026 to 10 Jan 2026")
     AnsiNote("  @Cpt summary <#>              @D: Total for last X days. Ex: @Wpt summary 30")
