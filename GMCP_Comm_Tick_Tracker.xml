@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="GMCP_Tick_and_Repop_Tracker"
+   author="Gemini"
+   id="f1e2d3c4b5a69788d7c6b5a4"
+   language="Lua"
+   purpose="Verify GMCP comm.tick and comm.repop support"
+   save_state="n"
+   date_written="2026-01-19"
+   version="1.1"
+   >
+<description trim="y">
+<![CDATA[
+Tracks and prints GMCP 'comm.tick' and 'comm.repop' messages to verify area reset signals.
+]]>
+</description>
+</plugin>
+
+<script>
+<![CDATA[
+function OnPluginBroadcast(msg, id, name, text)
+   -- Ensure we are listening to the GMCP handler plugin
+   if id == '3e7dedbe37e44942dd46d264' then
+      
+      -- Monitor comm.tick (Heartbeat)
+      if text == "comm.tick" then
+         local any, datastring = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpdata_as_string", "comm.tick")
+         if datastring then
+            ColourNote("yellow", "black", ">>> GMCP TICK DETECTED: " .. tostring(datastring))
+         end
+      end
+
+      -- Monitor comm.repop (Potential Reset Signal)
+      if text == "comm.repop" then
+         local any, datastring = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpdata_as_string", "comm.repop")
+         if datastring then
+            ColourNote("lawngreen", "black", ">>> GMCP REPOP DETECTED: " .. tostring(datastring))
+         else
+            -- Some messages might be signals without specific data tables
+            ColourNote("lawngreen", "black", ">>> GMCP REPOP SIGNAL DETECTED (No data table)")
+         end
+      end
+   end
+end
+
+function OnPluginInstall()
+   Note("GMCP Tick & Repop Tracker Installed. Waiting for signals...")
+end
+]]>
+</script>
+</muclient>

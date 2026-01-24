@@ -9237,7 +9237,13 @@ function inv.cli.consume.fn(name, line, wildcards)
   return DRL_RET_SUCCESS
 end
 
-
+function GetConsumeCount(typeName)
+    -- Simply call the internal function we just built
+    local count = inv.consume.getCount(typeName)
+    
+    -- We use Note to push it to the output or return it for MUSHclient's CallPlugin
+    return count
+end
 
 
 
