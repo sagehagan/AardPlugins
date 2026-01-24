@@ -8,9 +8,9 @@
   language="Lua"
   purpose="Automatic Pup Tracking"
   save_state="y"
-  date_written="2026-01-20"
+  date_written="2026-01-23"
   requires="5.06"
-  version="8.8"
+  version="9.1"
   >
 </plugin>
 
@@ -23,6 +23,8 @@
   <alias match="^pt log (.+)$" script="tracker_log_settings" enabled="y" regexp="y" sequence="100" />
   <alias match="^pt help$" script="pt_help" enabled="y" regexp="y" sequence="100" />
   <alias match="^pt report$" script="ToggleReport" enabled="y" regexp="y" sequence="100" />
+  <alias match="^pt summary (\d+)$" script="ShowDailyHistory" enabled="y" regexp="y" sequence="100" />
+  <alias match="^pt summary (\d+) total$" script="ShowTotalHistory" enabled="y" regexp="y" sequence="100" />
 </aliases>
 
 <triggers>
@@ -42,6 +44,7 @@ require "serialize"
 
 local history = {}
 local today_times = {}
+local daily_archive = {}
 local rep_chan = "print"
 local log_tab = ""
 local t_date = ""
@@ -57,7 +60,6 @@ local color_map = {
     ["@Y"] = "@Y", ["@C"] = "@C", ["@W"] = "@W", ["@D"] = "@D"
 }
 
--- Returns the current date string in EST (UTC-5)
 function GetESTDate()
     local utc = os.time(os.date("!*t"))
     local est = utc - (5 * 3600)
@@ -76,9 +78,11 @@ function OnPluginInstall()
     if h_var and h_var ~= "" then history = loadstring("return " .. h_var)() or {} end
     local t_var = GetVariable("today_times_table")
     if t_var and t_var ~= "" then today_times = loadstring("return " .. t_var)() or {} end
+    local a_var = GetVariable("daily_archive")
+    if a_var and a_var ~= "" then daily_archive = loadstring("return " .. a_var)() or {} end
     
     last_pup_time = GetInfo(304)
-    AnsiNote("@R[ @WHeracles @R] @DPup Loaded. Reset synced to @WEST@D. Use @Cpt help @Dfor commands.")
+    AnsiNote("@R[ @WHeracles @R] @DPup Tracker Loaded. Type @Cpt help @Dfor commands")
     return nil
 end
 
@@ -147,15 +151,17 @@ function TrgFinish(name, line, w)
         local pTime = math.max(0, newPup.finishTime - last_pup_time)
         local totalTrains = newPup.trains + newPup.bonus
         
-        -- Cap time at 10 minutes to prevent AFK skewing the total average
-        local statsTime = math.min(pTime, 600)
-        
-        table.insert(history, statsTime)
-        if #history > 10 then table.remove(history, 1) end
-        table.insert(today_times, statsTime)
+        if pTime <= 60 then
+            table.insert(history, pTime)
+            if #history > 10 then table.remove(history, 1) end
+            table.insert(today_times, pTime)
+            
+            if report_active then
+                table.insert(fiveMinStats.times, pTime)
+            end
+        end
         
         if report_active then
-            table.insert(fiveMinStats.times, statsTime)
             fiveMinStats.pups = fiveMinStats.pups + 1
             fiveMinStats.trains = fiveMinStats.trains + totalTrains
         end
@@ -164,7 +170,6 @@ function TrgFinish(name, line, w)
         t_trains = t_trains + totalTrains
         
         BroadcastPup(pTime, totalTrains)
-        
         last_pup_time = GetInfo(304)
         newPup = { trains = 0, bonus = 0, kills = 0, gold = 0 }
         SaveState()
@@ -172,22 +177,22 @@ function TrgFinish(name, line, w)
     return nil
 end
 
-function ToggleReport(name, line, wildcards)
-    if not report_active then
-        fiveMinStats = { pups = 0, trains = 0, gold = 0, times = {} }
-        report_start_time = os.time()
-        report_active = true
-        AnsiNote("@R[ @WHeracles @R] @G5-Min Report: @WSTARTED@D.")
-    else
-        report_active = false
-        AnsiNote("@R[ @WHeracles @R] @G5-Min Report: @RCANCELED@D.")
-    end
-    return nil
-end
-
 function TmrPulse(name)
     local currDate = GetESTDate()
     if t_date ~= currDate then
+        local sTime = 0; for _,v in ipairs(today_times) do sTime = sTime + v end
+        local avgToday = (#today_times > 0) and (sTime / #today_times) or 0
+
+        local final_report = string.format("@R[@WFINAL SUMMARY: %s@R] @DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+                             t_date, CommaValue(t_pups), CommaValue(t_trains), FormatGold(t_gold), FormatSeconds(avgToday))
+        
+        if log_tab ~= "" then 
+            CallPlugin("b555825a4a5700c35fa80780", "storeFromOutside", StylesToColours(final_report), log_tab)
+        end
+        
+        table.insert(daily_archive, { date = t_date, pups = t_pups, trains = t_trains, gold = t_gold, avg = avgToday, time_count = #today_times })
+        if #daily_archive > 30 then table.remove(daily_archive, 1) end
+
         t_date = currDate
         t_trains, t_pups, t_gold = 0, 0, 0
         history, today_times = {}, {}
@@ -195,6 +200,58 @@ function TmrPulse(name)
     end
     if report_active and os.time() - report_start_time >= 300 then
         ExecuteReport()
+    end
+    return nil
+end
+
+function ShowDailyHistory(name, line, wildcards)
+    local count = math.min(tonumber(wildcards[1]), #daily_archive)
+    if count == 0 then AnsiNote("@R[ @WHeracles @R] @DNo archived history found"); return end
+    
+    AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote("@W                          DAILY PUP ARCHIVE (LAST " .. count .. " DAYS)           ")
+    AnsiNote("@R--------------------------------------------------------------------------------")
+    for i = #daily_archive, #daily_archive - count + 1, -1 do
+        local d = daily_archive[i]
+        AnsiNote(string.format("@C%s @R| @DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+                 d.date, CommaValue(d.pups), CommaValue(d.trains), FormatGold(d.gold), FormatSeconds(d.avg or 0)))
+    end
+    AnsiNote("@R--------------------------------------------------------------------------------")
+end
+
+function ShowTotalHistory(name, line, wildcards)
+    local count = math.min(tonumber(wildcards[1]), #daily_archive)
+    if count == 0 then AnsiNote("@R[ @WHeracles @R] @DNo archived history found"); return end
+    
+    local sPups, sTrains, sGold, totalSeconds, totalCount = 0, 0, 0, 0, 0
+    for i = #daily_archive, #daily_archive - count + 1, -1 do
+        local d = daily_archive[i]
+        sPups = sPups + d.pups
+        sTrains = sTrains + d.trains
+        sGold = sGold + d.gold
+        totalSeconds = totalSeconds + ((d.avg or 0) * (d.time_count or 0))
+        totalCount = totalCount + (d.time_count or 0)
+    end
+    
+    local grandAvg = (totalCount > 0) and (totalSeconds / totalCount) or 0
+
+    AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote("@W                      TOTAL COMBINED SUMMARY (" .. count .. " DAYS)               ")
+    AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote(string.format("@DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+             CommaValue(sPups), CommaValue(sTrains), FormatGold(sGold), FormatSeconds(grandAvg)))
+    AnsiNote("@R--------------------------------------------------------------------------------")
+end
+
+function ToggleReport(name, line, wildcards)
+    if not report_active then
+        fiveMinStats = { pups = 0, trains = 0, gold = 0, times = {} }
+        report_start_time = os.time()
+        report_active = true
+        AnsiNote("@R[ @WHeracles @R] @G5-Min Report: @WSTARTED@D")
+    else
+        report_active = false
+        AnsiNote("@R[ @WHeracles @R] @G5-Min Report: @RCANCELED@D")
     end
     return nil
 end
@@ -302,6 +359,7 @@ function OnPluginSaveState()
     SetVariable("log_tab", log_tab)
     SetVariable("history_table", serialize.save_simple(history))
     SetVariable("today_times_table", serialize.save_simple(today_times))
+    SetVariable("daily_archive", serialize.save_simple(daily_archive))
     return nil
 end
 
@@ -310,11 +368,13 @@ function pt_help()
     AnsiNote("@R--------------------------------------------------------------------------------")
     AnsiNote("@W                             HERACLES PUP TRACKER                               ")
     AnsiNote("@R--------------------------------------------------------------------------------")
-    AnsiNote("  @Cpt report           @D: Starts a 5-minute data collection window.")
-    AnsiNote("  @Cpt chan <channel>   @D: Set output (e.g., @Cgtell@D). Use @Cnone@D for local only.")
-    AnsiNote("  @Cpt log <tab_name>   @D: Sends reports to Fiendish's Comm Log (e.g. @CPups@D).")
-    AnsiNote("  @Cpt log off          @D: Disables tab redirection.")
-    AnsiNote("  @Cpt help             @D: Displays this menu.")
+    AnsiNote("  @Cpt report           @D: Starts a 5-minute data collection window")
+    AnsiNote("  @Cpt chan <channel>   @D: Set output (e.g., @Cgtell@D). Use @Cnone@D for local only")
+    AnsiNote("  @Cpt log <tab_name>   @D: Sends reports to Fiendish's Comm Log (e.g. @CPups@D)")
+    AnsiNote("  @Cpt log off          @D: Disables tab redirection")
+    AnsiNote("  @Cpt summary <#>      @D: Lists history for X days")
+    AnsiNote("  @Cpt summary <#> total@D: Shows one grand total for X days")
+    AnsiNote("  @Cpt help             @D: Displays this menu")
     AnsiNote("@R--------------------------------------------------------------------------------")
     AnsiNote("  @WCURRENT SETTINGS:")
     AnsiNote("  @DOutput Channel: @W" .. rep_chan)
