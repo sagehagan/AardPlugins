@@ -9,7 +9,7 @@
     language="Lua" 
     purpose="Automatic Spell/Skill Casting" 
     save_state="y" 
-    version="8.9">
+    version="9.2">
   </plugin>
 
   <triggers>
@@ -47,7 +47,7 @@
     <alias match="^acstab$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acquaff(?: +(?<type>hp|mn|mv) +(?<pct>\d+) +(?<cnt>\d+))?$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
     <alias match="^acquaff$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
-    <alias match="^ac debug$" enabled="y" regexp="y" script="ToggleDebug" sequence="20" />
+    <alias match="caster debug" enabled="y" ignore_case="y" script="ToggleDebug" />
     <alias match="^ac$" enabled="y" regexp="y" script="AliasHandler" sequence="100" />
     <alias match="caster status" enabled="y" ignore_case="y" script="ShowStatus" />
     <alias match="caster help" enabled="y" ignore_case="y" script="ShowHelp" />
@@ -56,7 +56,7 @@
   <script>
     <![CDATA[
     local GMCP_ID = "3e7dedbe37e44942dd46d264"
-    local INV_ID = "8286a63630f9d997678f28d6"
+    local INV_ID = "88c86ea252fc1918556df9fe"
     local debug_mode = (GetVariable("debug_mode") or "0") == "1"
     
     local Caster = {
@@ -107,11 +107,7 @@
         local base = parse_gmcp("char.base")
         if base and base.subclass then
             Caster.subclass = base.subclass
-            if Caster.subclass:lower() == "navigator" then
-                Caster.recast_speed = 0.5
-            else
-                Caster.recast_speed = 2.0
-            end
+            Caster.recast_speed = (Caster.subclass:lower() == "navigator") and 0.5 or 2.0
         end
     end
 
@@ -169,11 +165,7 @@
         
         if Caster.subclass:lower() == "ninja" and Caster.cfg.stab_on and Caster.can_backstab then
             Caster.can_backstab = false
-            if skill ~= "" then
-                Execute("backstab;" .. skill)
-            else
-                Execute("backstab")
-            end
+            Execute(skill ~= "" and ("backstab;" .. skill) or "backstab")
         elseif skill ~= "" then
             Execute(skill)
         end
@@ -186,11 +178,8 @@
         
         if word == active_trig then
             local now = os.clock()
-            local elapsed = now - Caster.last_recast_time
-            if elapsed < Caster.recast_speed then
-                if debug_mode then 
-                    Caster.log(string.format("Recast Halted: %.1fs Cooldown.", Caster.recast_speed), "orange") 
-                end
+            if (now - Caster.last_recast_time) < Caster.recast_speed then
+                if debug_mode then Caster.log(string.format("Recast Halted: %.1fs Cooldown.", Caster.recast_speed), "orange") end
                 return
             end
             Caster.last_recast_time = now
@@ -234,26 +223,23 @@
             local cur, max = tonumber(current_vitals[d.key]), tonumber(max_vitals[d.max_key] or max_vitals["max"..d.key])
             if cur and max and (cur/max*100) < d.pct then
                 
-                -- POTION CHECK START
                 local res, count = CallPlugin(INV_ID, "GetConsumeCount", d.inv_type)
+                local num_count = tonumber(count) or 0
+                
                 if debug_mode then
-                    Caster.log(string.format("Checking %s: Result=%s, Count=%s", d.inv_type, tostring(res), tostring(count)), "cyan")
+                    Caster.log(string.format("Inv Check [%s]: Count=%d", d.inv_type, num_count), "cyan")
                 end
 
-                if res == 0 and (tonumber(count) or 0) > 0 then
+                if num_count > 0 then
                     Caster.log("Low " .. k:upper() .. "! Delaying recast 3s.", "yellow")
                     Caster.pause_cast = true
                     for i = 1, d.cnt do Execute("dinv consume " .. d.item) end
                     Caster.last_quaff = now
                     return 
-                elseif res == 0 then
+                else
                     Caster.warn("Low " .. k:upper() .. "! No potions available!")
                     return
-                else
-                    Caster.warn("Potion Check Error: Inventory Plugin Unreachable.")
-                    return
                 end
-                -- POTION CHECK END
             end
         end
     end
@@ -322,7 +308,7 @@
         local function status_tag(b) return b and "[ ACTIVE ]" or "[ INACTIVE ]", b and "lime" or "red" end
         local function val_tag(v) return v ~= "" and v or "Not Set", v ~= "" and "yellow" or "gray" end
         ColourNote("silver", "", "======================================================================")
-        ColourTell("cyan", "", " [ CASTER SYSTEM v8.9 ]") 
+        ColourTell("cyan", "", " [ CASTER SYSTEM v9.2 ]") 
         local p, pc = status_tag(Caster.enabled)
         ColourTell("silver", "", " Status: ") ColourNote(pc, "", p)
         
@@ -388,13 +374,10 @@
         Note("")
         ColourTell("white", "", " caster status        ") ColourNote("silver", "", "View current settings and vital levels.")
         ColourTell("white", "", " caster help          ") ColourNote("silver", "", "Display this help menu.")
+        ColourTell("white", "", " caster debug         ") ColourNote("silver", "", "Toggle debug messaging.")
         Note("")
         ColourNote("silver", "", " EXAMPLES:")
         Note("    ac fury cast 626                 - Matches 'Your fury'")
-        Note("    acalt bone-crunching c 358       - Matches 'Your bone-crunching'")
-        Note("    ac none                          - Disables the primary recast skill.")
-        Note("    acopen cast 574                  - Fires heavenly smiting once at combat start.")
-        Note("    acheal cast 146 Heracles         - Fires regen once at combat end.")
         Note("    acquaff hp 40 3                  - Quaffs 3 heals when HP falls below 40%.")
         Note("")
         ColourNote("red", "", " Auto Quaff requires Durel's Inventory Plugin")
@@ -406,7 +389,6 @@
         Note(" 4. IMMUNITY: Swaps to Alt or shuts down if unaffected.")
         Note(" 5. QUAFF: Checks stock via Aard_Inventory; stops for 3s per quaff.")
         Note("")
-        ColourNote("red", "", " Ninjas should use spiraling / spiral for primary skill - Backstab logic built in.")
         ColourNote("silver", "", "----------------------------------------------------------------------")
     end
 
@@ -431,16 +413,9 @@
                 Caster.is_fighting = false
                 if Caster.cfg.heal_on and Caster.cfg.heal ~= "" then Execute(Caster.cfg.heal) end
                 if Caster.cfg.consume then Execute("consume") end
-                Caster.using_alt = false; Caster.temp_disable = false; 
-                Caster.pause_cast = false; Caster.blocked_casts = 0; Caster.quaff_override = false
-                Caster.last_recast_time = 0
+                Caster.using_alt = false; Caster.temp_disable = false; Caster.pause_cast = false; Caster.last_recast_time = 0
             end
         end
-    end
-
-    function get_caster_opener()
-        if Caster and Caster.cfg then return Caster.cfg.opener end
-        return ""
     end
 
     Caster.update_subclass()
