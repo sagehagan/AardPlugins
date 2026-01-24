@@ -8,24 +8,30 @@
    language="Lua"
    purpose="Personal and Group Damage Tracking"
    save_state="y"
-   date_written="2026-01-20"
+   date_written="2026-01-23"
    requires="5.06"
-   version="5.8"
+   version="6.2"
    >
 </plugin>
 
 <triggers>
   <trigger
+   enabled="y" regexp="y"
+   match="^Your (.+?) reflects the (.+?) back at (.+?)!$"
+   script="prepare_reflection" group="dmg_triggers" sequence="1"
+  ></trigger>
+
+  <trigger
    enabled="n" regexp="y" 
    match="^(?:\*?\[\d+\] )?Your (?<ability>.+?)(?=\s(?:does|misses|tickles|bruises|scratches|grazes|nicks|scars|hits|injures|wounds|mauls|maims|mangles|mars|LACERATES|DECIMATES|DEVASTATES|ERADICATES|OBLITERATES|EXTIRPATES|INCINERATES|MUTILATES|DISEMBOWELS|MASSACRES|DISMEMBERS|RENDS|BLASTS|DEMOLISHES|SHREDS|DESTROYS|PULVERIZES|VAPORIZES|ATOMIZES|ASPHYXIATES|RAVAGES|FISSURES|LIQUIDATES|EVAPORATES|SUNDERS|TEARS|WASTES|CREMATES|ANNIHILATES|IMPLODES|EXTERMINATES|SHATTERS|SLAUGHTERS|RUPTURES|NUKES|GLACIATES|METEORITES|SUPERNOVAS|[-<\[=+])) (.*) \[(?<damage>[\d,]+)\].?$"
-   script="dynamic_tracking" group="dmg_triggers" sequence="1"
+   script="dynamic_tracking" group="dmg_triggers" sequence="2"
    ignore_case="y"
   ></trigger>
 
   <trigger
    enabled="n" regexp="y" 
    match="^(?:\*?\[\d+\] )?(?<pname>[A-Za-z]+)\'s? (?<msg>.+?)(?=\s(?:does|misses|tickles|bruises|scratches|grazes|nicks|scars|hits|injures|wounds|mauls|maims|mangles|mars|LACERATES|DECIMATES|DEVASTATES|ERADICATES|OBLITERATES|EXTIRPATES|INCINERATES|MUTILATES|DISEMBOWELS|MASSACRES|DISMEMBERS|RENDS|BLASTS|DEMOLISHES|SHREDS|DESTROYS|PULVERIZES|VAPORIZES|ATOMIZES|ASPHYXIATES|RAVAGES|FISSURES|LIQUIDATES|EVAPORATES|SUNDERS|TEARS|WASTES|CREMATES|ANNIHILATES|IMPLODES|EXTERMINATES|SHATTERS|SLAUGHTERS|RUPTURES|NUKES|GLACIATES|METEORITES|SUPERNOVAS|[-<\[=+])) (.*) \[(?<pdamage>[\d,]+)\].?$"
-   script="group_tracking" group="dmg_triggers" sequence="2"
+   script="group_tracking" group="dmg_triggers" sequence="3"
    ignore_case="y"
   ></trigger>
 </triggers>
@@ -49,6 +55,7 @@ local meter_active = false
 local total_combat_time = 0
 local os_start = 0
 local curr_state = ""
+local reflecting = false
 
 local melee_types = {
     ["acidic bite"]=true, ["light"]=true, ["digestion"]=true, ["magic"]=true, ["slime"]=true,
@@ -70,14 +77,16 @@ end
 function show_help()
     Note("")
     ColourNote("darkorange", "", "==========================================================")
-    ColourNote("yellow", "",     "            DYNAMIC DAMAGE TRACKING v5.8                ")
+    ColourNote("yellow", "",     "            DYNAMIC DAMAGE TRACKING v6.2                ")
     ColourNote("darkorange", "", "==========================================================")
-    ColourNote("white", "", " dmg auto      ", "cyan", "", "- Toggle tracking [Currently: " .. (meter_active and "ON" or "OFF") .. "]")
-    ColourNote("white", "", " dmg full      ", "cyan", "", "- Detailed local breakdown (Wail, Bite, etc)")
-    ColourNote("white", "", " dmg rep [chan]", "cyan", "", "- Public Personal Report (Combat-only DPS)")
+    ColourNote("white", "", " dmg auto       ", "cyan", "", "- Toggle tracking [Currently: " .. (meter_active and "ON" or "OFF") .. "]")
+    ColourNote("white", "", " dmg full       ", "cyan", "", "- Segmented Personal Breakdown (Melee/Spells/Reflect)")
+    ColourNote("white", "", " dmg rep [chan] ", "cyan", "", "- Public Personal Report (Top 5 + Buckets)")
     ColourNote("white", "", " dmg grep [chan]", "cyan", "", "- Public Group Report (Present members only)")
-    ColourNote("white", "", " dmg reset     ", "cyan", "", "- Wipe all data and reset timers")
+    ColourNote("white", "", " dmg reset      ", "cyan", "", "- Wipe all data and reset combat timers")
+    ColourNote("white", "", " dmg help       ", "cyan", "", "- Display this menu")
     ColourNote("darkorange", "", "==========================================================")
+    Note("")
 end
 
 function toggle_meter()
@@ -90,6 +99,8 @@ function DamageStats()
     AllTimeDamage = {}; GroupDamage = {}; total_combat_time = 0; os_start = 0
     Note(">>> Damage Meter Reset.")
 end
+
+function prepare_reflection() reflecting = true end
 
 function clean_ability(str)
     local cleaned = str:gsub("^%s*(.-)%s*$", "%1")
@@ -104,8 +115,10 @@ function dynamic_tracking(name, line, wildcards)
     local dmg = tonumber((string.gsub(wildcards.damage or "0", ",", ""))) or 0
     
     if dmg > 0 then
-        AllTimeDamage[ability_name] = (AllTimeDamage[ability_name] or 0) + dmg
+        local key = reflecting and ("Reflected: " .. ability_name) or ability_name
+        AllTimeDamage[key] = (AllTimeDamage[key] or 0) + dmg
         GroupDamage[my_name] = (GroupDamage[my_name] or 0) + dmg
+        reflecting = false
     end
 end
 
@@ -123,66 +136,88 @@ function full_breakdown()
     local total = 0
     for _, v in pairs(AllTimeDamage) do total = total + v end
     if total == 0 then return Note("No damage recorded.") end
-    local sorted = {}
-    for k, v in pairs(AllTimeDamage) do table.insert(sorted, {n=k, v=v}) end
-    table.sort(sorted, function(a,b) return a.v > b.v end)
     
+    local melee, spells, reflect = {}, {}, {}
+    for k, v in pairs(AllTimeDamage) do
+        if k:find("^Reflected:") then table.insert(reflect, {n=k:gsub("Reflected: ", ""), v=v})
+        elseif melee_types[k:lower()] then table.insert(melee, {n=k, v=v})
+        else table.insert(spells, {n=k, v=v}) end
+    end
+    
+    local function sort_v(a,b) return a.v > b.v end
+    table.sort(melee, sort_v); table.sort(spells, sort_v); table.sort(reflect, sort_v)
+
     local active_time = total_combat_time
     if curr_state == "8" and os_start > 0 then active_time = active_time + (os.time() - os_start) end
 
     Note("")
     ColourNote("yellow", "", "--- Full Personal Breakdown (Detailed) ---")
-    for _, d in ipairs(sorted) do
-        local is_melee = melee_types[d.n:lower()] and " (Melee)" or ""
-        local perc = round((d.v / total) * 100)
-        ColourNote("white", "", string.format("%-25s", d.n .. is_melee), "silver", "", string.format(": %15s [%d%%]", commas(d.v), perc))
+    
+    if #melee > 0 then
+        ColourNote("cyan", "", "Melee Sources")
+        for _, d in ipairs(melee) do
+            ColourNote("white", "", string.format("  %-23s: %15s [%d%%]", d.n, commas(d.v), round((d.v/total)*100)))
+        end
     end
+
+    if #spells > 0 then
+        ColourNote("cyan", "", "Ability/Spell Sources")
+        for _, d in ipairs(spells) do
+            ColourNote("white", "", string.format("  %-23s: %15s [%d%%]", d.n, commas(d.v), round((d.v/total)*100)))
+        end
+    end
+    
+    if #reflect > 0 then
+        ColourNote("cyan", "", "Reflected Sources")
+        for _, d in ipairs(reflect) do
+            ColourNote("white", "", string.format("  %-23s: %15s [%d%%]", d.n, commas(d.v), round((d.v/total)*100)))
+        end
+    end
+    
     ColourNote("yellow", "", "Total Damage: " .. commas(total) .. " | Combat Time: " .. active_time .. "s")
     Note("")
 end
 
 function report_meter(name, line, wildcards)
     local rep_chan = wildcards[1] ~= "" and wildcards[1] or "say"
-    local total = 0
-    local bucketed = {}
+    local total, bucketed = 0, {}
+    
     for k, v in pairs(AllTimeDamage) do
         total = total + v
-        local report_name = melee_types[k:lower()] and "Melee" or k
+        local report_name = k
+        if k:find("^Reflected:") then report_name = "Reflected"
+        elseif melee_types[k:lower()] then report_name = "Melee" end
         bucketed[report_name] = (bucketed[report_name] or 0) + v
     end
+
     if total == 0 then return end
     local sorted = {}
     for k, v in pairs(bucketed) do table.insert(sorted, {n=k, v=v}) end
     table.sort(sorted, function(a,b) return a.v > b.v end)
+    
     local out = {}
     local other_damage = 0
     for i, d in ipairs(sorted) do
-        if i <= 4 then
+        if i <= 5 then
             table.insert(out, string.format("@D%s: @w%s @R[@w%d%%@R]", d.n, commas(d.v), round((d.v/total)*100)))
-        else
-            other_damage = other_damage + d.v
-        end
+        else other_damage = other_damage + d.v end
     end
     if other_damage > 0 then
         table.insert(out, string.format("@DOther: @w%s @R[@w%d%%@R]", commas(other_damage), round((other_damage/total)*100)))
     end
     
-    -- DPS Calculation strictly on Combat State time
     local active_time = total_combat_time
-    local live_tag = ""
     if curr_state == "8" and os_start > 0 then 
         active_time = active_time + (os.time() - os_start) 
-        live_tag = " (Live)"
     end
     
     local dps = math.floor(total / (active_time > 0 and active_time or 1))
-    Send(rep_chan .. " @R[@DPersonal Report@R] " .. table.concat(out, " ") .. " @DTotal: @w" .. commas(total) .. " @DDPS: @w" .. commas(dps) .. live_tag)
+    Send(rep_chan .. " @R[@DPersonal Report@R] " .. table.concat(out, " ") .. " @DTotal: @w" .. commas(total) .. " @DDPS: @w" .. commas(dps))
 end
 
 function report_group(name, line, wildcards)
     local rep_chan = wildcards[1] ~= "" and wildcards[1] or "say"
-    local filtered_data = {}
-    local group_total = 0
+    local filtered_data, group_total = {}, 0
     for player, dmg in pairs(GroupDamage) do
         if valid_group_members[player] == 1 or player == my_name then
             table.insert(filtered_data, {n=player, v=dmg})
@@ -218,11 +253,7 @@ function OnPluginBroadcast(msg, id, name, text)
             local _, pvar = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpval", "char.status")
             local status = loadstring("return " .. pvar)()
             local new_state = (status and status.state) or ""
-            
-            -- Enter Combat (State 8)
-            if new_state == "8" and curr_state ~= "8" then
-                os_start = os.time()
-            -- Exit Combat
+            if new_state == "8" and curr_state ~= "8" then os_start = os.time()
             elseif new_state ~= "8" and curr_state == "8" then
                 if os_start > 0 then
                     total_combat_time = total_combat_time + (os.time() - os_start)
