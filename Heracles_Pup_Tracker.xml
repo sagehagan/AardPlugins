@@ -10,7 +10,7 @@
   save_state="y"
   date_written="2026-01-23"
   requires="5.06"
-  version="11.3"
+  version="11.7"
   >
 </plugin>
 
@@ -211,18 +211,24 @@ function GetFullSet()
     return full
 end
 
+function PrintHeader(title)
+    AnsiNote(" ")
+    AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote("@W" .. string.rep(" ", math.floor((80 - #title)/2)) .. title)
+    AnsiNote("@R--------------------------------------------------------------------------------")
+end
+
 function ShowDailyHistory(name, line, wildcards)
     local full = GetFullSet()
     local count = math.min(tonumber(wildcards[1]), #full)
-    AnsiNote("@R--------------------------------------------------------------------------------")
-    AnsiNote("@W                          DAILY BREAKDOWN (LAST " .. count .. " DAYS)           ")
-    AnsiNote("@R--------------------------------------------------------------------------------")
+    PrintHeader("DAILY BREAKDOWN (LAST " .. count .. " DAYS)")
     for i = #full, #full - count + 1, -1 do
         local d = full[i]
-        AnsiNote(string.format("@C%s @R| @DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+        AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
                  d.date, CommaValue(d.pups), CommaValue(d.trains), FormatGold(d.gold), FormatSeconds(d.avg or 0)))
     end
     AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote(" ")
 end
 
 function ShowDailyRange(name, line, wildcards)
@@ -234,13 +240,18 @@ function ShowDailyRange(name, line, wildcards)
         if inRange then table.insert(results, d) end
         if d_clean == eDate then inRange = false end
     end
-    AnsiNote("@R--------------------------------------------------------------------------------")
-    for i = #results, 1, -1 do
-        local d = results[i]
-        AnsiNote(string.format("@C%s @R| @DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-                 d.date, CommaValue(d.pups), CommaValue(d.trains), FormatGold(d.gold), FormatSeconds(d.avg or 0)))
+    PrintHeader("DAILY RANGE (" .. sDate .. " to " .. eDate .. ")")
+    if #results == 0 then
+        AnsiNote("@D                           No Data Found for this Date Range")
+    else
+        for i = #results, 1, -1 do
+            local d = results[i]
+            AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+                     d.date, CommaValue(d.pups), CommaValue(d.trains), FormatGold(d.gold), FormatSeconds(d.avg or 0)))
+        end
     end
     AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote(" ")
 end
 
 function ShowTotalHistory(name, line, wildcards)
@@ -253,10 +264,11 @@ function ShowTotalHistory(name, line, wildcards)
         totalSeconds = totalSeconds + ((d.avg or 0) * (d.time_count or 0)); totalCount = totalCount + (d.time_count or 0)
     end
     local grandAvg = (totalCount > 0) and (totalSeconds / totalCount) or 0
+    PrintHeader("TOTAL SUMMARY (LAST " .. count .. " DAYS)")
+    AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+             "TOTALS", CommaValue(sPups), CommaValue(sTrains), FormatGold(sGold), FormatSeconds(grandAvg)))
     AnsiNote("@R--------------------------------------------------------------------------------")
-    AnsiNote(string.format("@DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-             CommaValue(sPups), CommaValue(sTrains), FormatGold(sGold), FormatSeconds(grandAvg)))
-    AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote(" ")
 end
 
 function ShowRangeHistory(name, line, wildcards)
@@ -272,10 +284,15 @@ function ShowRangeHistory(name, line, wildcards)
         if d_clean == eDate then inRange = false end
     end
     local grandAvg = (totalCount > 0) and (totalSeconds / totalCount) or 0
+    PrintHeader("RANGE SUMMARY (" .. sDate .. " to " .. eDate .. ")")
+    if sPups == 0 and sTrains == 0 then
+        AnsiNote("@D                           No Data Found for this Date Range")
+    else
+        AnsiNote(string.format("@C%-11s @R| @DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
+                 "TOTALS", CommaValue(sPups), CommaValue(sTrains), FormatGold(sGold), FormatSeconds(grandAvg)))
+    end
     AnsiNote("@R--------------------------------------------------------------------------------")
-    AnsiNote(string.format("@DPups: @W%s @R| @DTrains: @W%s @R| @DGold: @Y%s @R| @DAvg: @W%s", 
-             CommaValue(sPups), CommaValue(sTrains), FormatGold(sGold), FormatSeconds(grandAvg)))
-    AnsiNote("@R--------------------------------------------------------------------------------")
+    AnsiNote(" ")
 end
 
 function ToggleReport(name, line, wildcards)
@@ -368,10 +385,7 @@ function OnPluginSaveState()
 end
 
 function pt_help()
-    AnsiNote(" ")
-    AnsiNote("@R--------------------------------------------------------------------------------")
-    AnsiNote("@W                             HERACLES PUP TRACKER                               ")
-    AnsiNote("@R--------------------------------------------------------------------------------")
+    PrintHeader("HERACLES PUP TRACKER")
     AnsiNote("  @WSYSTEM COMMANDS")
     AnsiNote("  @Cpt chan <channel>           @D: Set output (Ex: @Cgtell@D, @Cclantalk@D, @Cprint@D)")
     AnsiNote("  @Cpt log <tab_name>           @D: Redirect output to Comm Log tab (Ex: @CPups@D)")
