@@ -10,7 +10,7 @@
   save_state="y"
   date_written="2026-01-23"
   requires="5.06"
-  version="14.4"
+  version="14.7"
   >
 </plugin>
 
@@ -43,6 +43,9 @@
   <trigger enabled="y" regexp="y" match="^You get ([\d,]+) gold coins from the corpse of .*?\.$" script="TrgGoldCorpse" sequence="10" />
   <trigger enabled="y" regexp="y" match="^.*? shares [\d,]+ gold coins with you\. Your share is ([\d,]+) gold\.$" script="TrgGoldSplit" sequence="10" />
   <trigger enabled="y" regexp="y" match="^\w+ gives you ([\d,]+) gold coins for the corpse of .*?\.$" script="TrgGoldSac" sequence="10" />
+  
+  <trigger enabled="y" regexp="y" match="^You sell .*? to .*? for ([\d,]+) gold\.$" script="TrgGoldSell" sequence="10" />
+  <trigger enabled="y" regexp="y" match="^You haggle with .*? for an extra ([\d,]+) gold\.$" script="TrgGoldHaggle" sequence="10" />
 
   <trigger enabled="y" regexp="y" match="^You share ([\d,]+) gold coins with .*? member.*? Your share is ([\d,]+) gold\.$" script="TrgGoldSubtract" sequence="5" />
   <trigger enabled="y" regexp="y" match="^You receive (\d+)(?:\+(\d+))?(?:\+(\d+))? experience points?\.$" name="trgMobExp" script="TrgExp" sequence="100" />
@@ -55,7 +58,7 @@ require "serialize"
 local history, today_times, daily_archive = {}, {}, {}
 local rep_chan, log_tab, t_date = "print", "", ""
 local t_trains, t_pups, t_gold = 0, 0, 0
-local g_corpse, g_crumble, g_split, g_sac = 0, 0, 0, 0
+local g_corpse, g_crumble, g_split, g_sac, g_sell, g_haggle = 0, 0, 0, 0, 0, 0
 local last_pup_time = 0
 local debug_mode = false
 
@@ -101,6 +104,20 @@ function TrgGoldSac(name, line, w)
     AdjustGold(amt)
 end
 
+function TrgGoldSell(name, line, w)
+    local amt = tonumber((string.gsub(w[1], ",", ""))) or 0
+    g_sell = g_sell + amt
+    DebugMsg(string.format("@GADDING SALE: @W%s @D(Source: %s)", CommaValue(amt), line))
+    AdjustGold(amt)
+end
+
+function TrgGoldHaggle(name, line, w)
+    local amt = tonumber((string.gsub(w[1], ",", ""))) or 0
+    g_haggle = g_haggle + amt
+    DebugMsg(string.format("@GADDING HAGGLE: @W%s @D(Source: %s)", CommaValue(amt), line))
+    AdjustGold(amt)
+end
+
 function TrgGoldSubtract(name, line, w)
     local total_shared = tonumber((string.gsub(w[1], ",", ""))) or 0
     local my_share = tonumber((string.gsub(w[2], ",", ""))) or 0
@@ -124,11 +141,21 @@ function ShowGoldSummary()
         return string.format("%.1f", (v / t_gold) * 100)
     end
 
-    PrintHeader("DAILY GOLD BREAKDOWN")
-    AnsiNote(string.format("  @DCorpse Loot:     @Y%15s @D[%s%%]", CommaValue(g_corpse), GetPerc(g_corpse)))
-    AnsiNote(string.format("  @DCrumble Gold:    @Y%15s @D[%s%%]", CommaValue(g_crumble), GetPerc(g_crumble)))
-    AnsiNote(string.format("  @DGroup Splits:    @Y%15s @D[%s%%]", CommaValue(g_split), GetPerc(g_split)))
-    AnsiNote(string.format("  @DAutosac/Deity:   @Y%15s @D[%s%%]", CommaValue(g_sac), GetPerc(g_sac)))
+    local sources = {
+        { name = "Corpse Loot",   val = g_corpse },
+        { name = "Crumble Gold",  val = g_crumble },
+        { name = "Group Splits",  val = g_split },
+        { name = "Autosac/Deity", val = g_sac },
+        { name = "Shop Sales",    val = g_sell },
+        { name = "Haggle Extra",  val = g_haggle }
+    }
+    
+    table.sort(sources, function(a, b) return a.val > b.val end)
+
+    PrintHeader("DAILY GOLD BREAKDOWN (SORTED)")
+    for _, s in ipairs(sources) do
+        AnsiNote(string.format("  @D%-15s: @Y%15s @D[%s%%]", s.name, CommaValue(s.val), GetPerc(s.val)))
+    end
     AnsiNote("  " .. string.rep("@D-", 45))
     AnsiNote(string.format("  @WTotal Earnings:   @Y%15s", CommaValue(t_gold)))
     AnsiNote("@R" .. string.rep("-", 80))
@@ -151,7 +178,7 @@ function TmrPulse(name)
         if #daily_archive > 30 then table.remove(daily_archive, 1) end
         
         t_date = currDate; t_trains, t_pups, t_gold = 0, 0, 0
-        g_corpse, g_crumble, g_split, g_sac = 0, 0, 0, 0
+        g_corpse, g_crumble, g_split, g_sac, g_sell, g_haggle = 0, 0, 0, 0, 0, 0
         history, today_times = {}, {}; SaveState()
     end
     if report_active and os.time() - report_start_time >= 300 then ExecuteReport() end
@@ -172,6 +199,8 @@ function OnPluginInstall()
     g_crumble = tonumber(GetVariable("g_crumble")) or 0
     g_split = tonumber(GetVariable("g_split")) or 0
     g_sac = tonumber(GetVariable("g_sac")) or 0
+    g_sell = tonumber(GetVariable("g_sell")) or 0
+    g_haggle = tonumber(GetVariable("g_haggle")) or 0
     rep_chan = GetVariable("repchan") or "print"
     log_tab = GetVariable("log_tab") or ""
     debug_mode = (GetVariable("debug_mode") == "y")
@@ -413,6 +442,7 @@ function OnPluginSaveState()
     SetVariable("today_pups", tostring(t_pups)); SetVariable("today_gold", tostring(t_gold))
     SetVariable("g_corpse", tostring(g_corpse)); SetVariable("g_crumble", tostring(g_crumble))
     SetVariable("g_split", tostring(g_split)); SetVariable("g_sac", tostring(g_sac))
+    SetVariable("g_sell", tostring(g_sell)); SetVariable("g_haggle", tostring(g_haggle))
     SetVariable("repchan", rep_chan); SetVariable("log_tab", log_tab); SetVariable("debug_mode", debug_mode and "y" or "n")
     SetVariable("history_table", serialize.save_simple(history))
     SetVariable("today_times_table", serialize.save_simple(today_times))
