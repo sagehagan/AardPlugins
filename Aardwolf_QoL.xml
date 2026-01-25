@@ -9,9 +9,9 @@
    language="Lua"
    purpose="Improving Aardwolf QoL"
    save_state="y"
-   date_written="2026-01-24 15:20:00"
+   date_written="2026-01-24 17:40:00"
    requires="5.06"
-   version="4.1"
+   version="4.4"
    >
 <description trim="y">
 <![CDATA[
@@ -182,7 +182,7 @@ local debugMode = (GetVariable("debugMode") == "1")
 
 -- State variables (Volatile)
 local currentState = 0
-local sancSpellActive = false
+local sancSpellActive = true
 local pendingSancAction = false
 local quickstabQueued = false
 local quickstabActive = false
@@ -205,7 +205,7 @@ local WARN = "orange"
 local DEBUG_CLR = "gray"
 
 function OnPluginInstall()
-    ColourNote(PRIMARY, "", "[Aardwolf QoL] ", SECONDARY, "", "Plugin by Heracles loaded. Tdy's new pup day is midnight eastern. Type ", HIGHLIGHT, "", "qol help", SECONDARY, "", " or ", HIGHLIGHT, "", "qol status", SECONDARY, "", " to begin.")
+    ColourNote(PRIMARY, "", "[Aardwolf QoL] ", SECONDARY, "", "Plugin by Heracles loaded. Type qol help or qol status to begin.")
     UpdateStateFromGMCP()
 end
 
@@ -396,14 +396,13 @@ function OnSancSpellOff()
     sancSpellActive = false
     DebugPrint("Sanctuary Spell (71) confirmed OFF.")
     
-    -- ONLY intervene if we are in combat (State 8).
-    -- If outside combat, another plugin handles the recast.
+    -- COMBAT ONLY PROTECTION
     if currentState == 8 then
-        DebugPrint("Combat loss: Wearing Aura.")
+        DebugPrint("Combat loss: Wearing Aura protection.")
         SmartWearAura()
         pendingSancAction = true
     else
-        DebugPrint("Out-of-combat loss: Allowing external plugin to handle recast.")
+        DebugPrint("Out-of-combat loss: Ignoring. Allowing external plugin to handle.")
         pendingSancAction = false
     end
 end
@@ -411,7 +410,7 @@ end
 function OnSancCast()
     sancSpellActive = true
     pendingSancAction = false
-    DebugPrint("Sanctuary cast successful. Holding Float gear.")
+    DebugPrint("Sanctuary cast successful.")
 end
 
 function OnSancFall()
@@ -419,30 +418,32 @@ function OnSancFall()
 end
 
 function OnAlreadyInSanc()
-    -- Sync gear if spell is active; otherwise queue recast if missing spell ID.
-    if sancSpellActive then
-        pendingSancAction = false
-        SmartWearFloat()
-    else
-        if currentState == 3 then ExecuteSanc() else pendingSancAction = true end
-    end
+    sancSpellActive = true
+    pendingSancAction = false
+    DebugPrint("Already in Sanc: Synchronized state.")
+    SmartWearFloat()
 end
 
 function OnSancConcentrationFail()
-    -- If cast fails (likely combat start), safeguard with Aura.
-    DebugPrint("Concentration failed: Re-equipping Aura.")
-    SmartWearAura()
-    pendingSancAction = true
+    if sancSpellActive then
+        DebugPrint("Concentration message ignored: Sanctuary is already active.")
+        return
+    end
+
+    -- Only swap if in combat and spell is actually missing
+    if currentState == 8 then
+        DebugPrint("Concentration failed in combat: Re-equipping Aura.")
+        SmartWearAura()
+        pendingSancAction = true
+    end
 end
 
 function ExecuteSanc()
-    if currentState == 3 then
-        DebugPrint("Transitioning to Float gear for Sanctuary cast.")
+    -- Only auto-cast in State 3 if we were specifically waiting for it (pendingSancAction)
+    if currentState == 3 and pendingSancAction then
         SmartWearFloat()
         Send("cast 'sanctuary'")
         pendingSancAction = false
-    else
-        pendingSancAction = true
     end
 end
 
