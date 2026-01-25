@@ -9,9 +9,9 @@
    language="Lua"
    purpose="Improving Aardwolf QoL"
    save_state="y"
-   date_written="2026-01-22 20:05:00"
+   date_written="2026-01-24 15:20:00"
    requires="5.06"
-   version="3.9"
+   version="4.1"
    >
 <description trim="y">
 <![CDATA[
@@ -20,12 +20,10 @@ Author: Heracles
 
 Features:
 - Categorized UI (Universal & Thief)
-- Bullet-Proof Gear Tracking: Monitors item strings (e.g., 'A Mist of Blood') to track equipment state.
-- Precision Sanctuary tracking via Affect ID 71 ({affon}/{affoff})
-- Automatic Aura Protection during combat transitions
-- Thief Quickstab tracking, queuing, and combat-interruption recovery
-- Active GMCP State Monitoring with Fail-safe Parsing
-- Professional Colorful UI and Debug Suite
+- Bullet-Proof Gear Tracking: Monitors item strings to track equipment state.
+- Precision Sanctuary Logic: Combat-only Aura protection with State 3 recovery.
+- Thief Quickstab tracking, queuing, and combat-interruption recovery.
+- Active GMCP State Monitoring with Fail-safe Parsing.
 ]]>
 </description>
 
@@ -207,7 +205,7 @@ local WARN = "orange"
 local DEBUG_CLR = "gray"
 
 function OnPluginInstall()
-    ColourNote(PRIMARY, "", "[Aardwolf QoL] ", SECONDARY, "", "Plugin by Heracles loaded. Type ", HIGHLIGHT, "", "qol help", SECONDARY, "", " or ", HIGHLIGHT, "", "qol status", SECONDARY, "", " to begin.")
+    ColourNote(PRIMARY, "", "[Aardwolf QoL] ", SECONDARY, "", "Plugin by Heracles loaded. Tdy's new pup day is midnight eastern. Type ", HIGHLIGHT, "", "qol help", SECONDARY, "", " or ", HIGHLIGHT, "", "qol status", SECONDARY, "", " to begin.")
     UpdateStateFromGMCP()
 end
 
@@ -320,15 +318,17 @@ function UpdateStateFromGMCP()
             currentState = tonumber(new_state)
             if old_state ~= currentState then
                 DebugPrint("State change: " .. old_state .. " -> " .. currentState)
-                if currentState == 3 and pendingSancAction then ExecuteSanc() end
-                if currentState == 3 and quickstabQueued then ExecuteQuickstab() end
+                if currentState == 3 then
+                    if pendingSancAction then ExecuteSanc() end
+                    if quickstabQueued then ExecuteQuickstab() end
+                end
             end
         end
     end
 end
 
 -------------------------------------------------------------------------
--- Gear String Tracking (Case-Insensitive Match)
+-- Gear String Tracking
 -------------------------------------------------------------------------
 
 function OnItemWorn(n, l, w)
@@ -358,11 +358,9 @@ end
 -------------------------------------------------------------------------
 
 function Set_Float_ID(n, l, w)
-    local input = w[1]
-    local id, name = string.match(input, "^(%S+)%s+(.*)$")
+    local id, name = string.match(w[1], "^(%S+)%s+(.*)$")
     if id and name then
-        floatID = id
-        floatName = name
+        floatID, floatName = id, name
         ColourNote(SUCCESS, "", string.format("[Aardwolf QoL] Float Item set: %s (%s)", floatID, floatName))
         SaveState()
     else
@@ -371,11 +369,9 @@ function Set_Float_ID(n, l, w)
 end
 
 function Set_Aura_ID(n, l, w)
-    local input = w[1]
-    local id, name = string.match(input, "^(%S+)%s+(.*)$")
+    local id, name = string.match(w[1], "^(%S+)%s+(.*)$")
     if id and name then
-        auraID = id
-        auraName = name
+        auraID, auraName = id, name
         ColourNote(SUCCESS, "", string.format("[Aardwolf QoL] Aura Item set: %s (%s)", auraID, auraName))
         SaveState()
     else
@@ -399,53 +395,55 @@ end
 function OnSancSpellOff() 
     sancSpellActive = false
     DebugPrint("Sanctuary Spell (71) confirmed OFF.")
-    HandleSancLoss()
+    
+    -- ONLY intervene if we are in combat (State 8).
+    -- If outside combat, another plugin handles the recast.
+    if currentState == 8 then
+        DebugPrint("Combat loss: Wearing Aura.")
+        SmartWearAura()
+        pendingSancAction = true
+    else
+        DebugPrint("Out-of-combat loss: Allowing external plugin to handle recast.")
+        pendingSancAction = false
+    end
 end
 
 function OnSancCast()
     sancSpellActive = true
-    SmartWearFloat()
     pendingSancAction = false
+    DebugPrint("Sanctuary cast successful. Holding Float gear.")
 end
 
 function OnSancFall()
-    if sancSpellActive then
-        sancSpellActive = false
-        HandleSancLoss()
-    end
-end
-
-function HandleSancLoss()
-    if currentState == 8 then
-        SmartWearAura()
-        pendingSancAction = true
-    elseif currentState == 3 then
-        ExecuteSanc()
-    else
-        pendingSancAction = true
-    end
+    if sancSpellActive then OnSancSpellOff() end
 end
 
 function OnAlreadyInSanc()
+    -- Sync gear if spell is active; otherwise queue recast if missing spell ID.
     if sancSpellActive then
-        DebugPrint("Already in Sanc: Spell active. Syncing gear.")
         pendingSancAction = false
         SmartWearFloat()
     else
-        DebugPrint("Already in Sanc: Spell (71) missing (Aura gear only). Queuing cast for State 3.")
         if currentState == 3 then ExecuteSanc() else pendingSancAction = true end
     end
 end
 
 function OnSancConcentrationFail()
-    if currentState == 8 then SmartWearAura() end
+    -- If cast fails (likely combat start), safeguard with Aura.
+    DebugPrint("Concentration failed: Re-equipping Aura.")
+    SmartWearAura()
     pendingSancAction = true
 end
 
 function ExecuteSanc()
-    SmartWearFloat()
-    Send("cast 'sanctuary'")
-    pendingSancAction = false
+    if currentState == 3 then
+        DebugPrint("Transitioning to Float gear for Sanctuary cast.")
+        SmartWearFloat()
+        Send("cast 'sanctuary'")
+        pendingSancAction = false
+    else
+        pendingSancAction = true
+    end
 end
 
 -------------------------------------------------------------------------
@@ -457,14 +455,12 @@ function OnQuickstabReset()
 end
 
 function OnQuickstabFail()
-    DebugPrint("Quickstab focus failure. Retrying...")
     ExecuteQuickstab()
 end
 
 function OnQuickstabCombatFail()
     if quickstabRecentlySent and not quickstabActive then
         quickstabQueued = true; quickstabRecentlySent = false
-        DebugPrint("Quickstab blocked by combat. Re-queuing.")
     end
 end
 

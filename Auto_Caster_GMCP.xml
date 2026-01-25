@@ -9,7 +9,7 @@
     language="Lua" 
     purpose="Automatic Spell/Skill Casting" 
     save_state="y" 
-    version="9.2">
+    version="9.4">
   </plugin>
 
   <triggers>
@@ -27,13 +27,20 @@
       script="ImmunityTrigger" 
       sequence="90" 
     />
-    <trigger 
-      enabled="y" 
-      match="^.* is DEAD!!?$" 
-      regexp="y" 
-      script="DeathHandler" 
-      sequence="80" 
-    />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* is DEAD!!?$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* is damned forever by the holy power!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* screams in agony as the acid consumes (?:him|her|it)!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* crumbles as (?:he|she|it) is battered to death!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* goes stiff as (?:he|she|it) is frozen to death!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* smoulders as the lightning destroys (?:him|her|it)!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* falls dead as (?:his|her|its) mind is destroyed!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* is slain by a final deadly stab!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* is slain by a final deadly slash!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* is destroyed by the blast!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* howls as (?:his|her|its) last spark of life is drained!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* disease removes (?:him|she|it) from this world!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* screams as the flames engulf (?:him|her|it)!!$" />
+    <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* is battered to death by the force of the water!$" />
   </triggers>
 
   <aliases>
@@ -71,7 +78,8 @@
         quaff_override = false,
         subclass     = "Unknown",
         recast_speed = 2.0,
-        can_backstab = true, 
+        can_backstab = true,
+        backstab_pending = false, 
         
         cfg = {
             primary      = GetVariable("primary") or "",
@@ -141,11 +149,14 @@
     end
 
     function DeathHandler(name, line, wildcards)
-        if Caster.subclass:lower() == "ninja" then
-            Caster.can_backstab = true
-            if Caster.cfg.stab_on and Caster.is_fighting then
-               Execute("backstab")
-               if debug_mode then Caster.log("Mob Dead: Sending follow-up Backstab.", "lime") end
+        if Caster.subclass:lower() == "ninja" and Caster.cfg.stab_on and Caster.is_fighting then
+            if not Caster.backstab_pending then
+                Caster.backstab_pending = true
+                Caster.can_backstab = true
+                Execute("backstab")
+                if debug_mode then Caster.log("Mob Dead: Queuing Backstab.", "lime") end
+            else
+                if debug_mode then Caster.log("Mob Dead: Backstab already pending, skipping.", "orange") end
             end
         end
     end
@@ -165,6 +176,7 @@
         
         if Caster.subclass:lower() == "ninja" and Caster.cfg.stab_on and Caster.can_backstab then
             Caster.can_backstab = false
+            Caster.backstab_pending = true
             Execute(skill ~= "" and ("backstab;" .. skill) or "backstab")
         elseif skill ~= "" then
             Execute(skill)
@@ -174,6 +186,12 @@
     function RecastHandler(name, line, wildcards)
         if not Caster.is_fighting or not Caster.enabled then return end
         local word = wildcards.keyword:lower()
+
+        if word == "backstab" then
+            Caster.backstab_pending = false
+            if debug_mode then Caster.log("Backstab successful: lock reset.", "lime") end
+        end
+
         local active_trig = (Caster.using_alt and Caster.cfg.alt_trig or Caster.cfg.pri_trig):lower()
         
         if word == active_trig then
@@ -222,7 +240,6 @@
             local d = Caster.vitals[k]
             local cur, max = tonumber(current_vitals[d.key]), tonumber(max_vitals[d.max_key] or max_vitals["max"..d.key])
             if cur and max and (cur/max*100) < d.pct then
-                
                 local res, count = CallPlugin(INV_ID, "GetConsumeCount", d.inv_type)
                 local num_count = tonumber(count) or 0
                 
@@ -308,7 +325,7 @@
         local function status_tag(b) return b and "[ ACTIVE ]" or "[ INACTIVE ]", b and "lime" or "red" end
         local function val_tag(v) return v ~= "" and v or "Not Set", v ~= "" and "yellow" or "gray" end
         ColourNote("silver", "", "======================================================================")
-        ColourTell("cyan", "", " [ CASTER SYSTEM v9.2 ]") 
+        ColourTell("cyan", "", " [ CASTER SYSTEM v9.4 ]") 
         local p, pc = status_tag(Caster.enabled)
         ColourTell("silver", "", " Status: ") ColourNote(pc, "", p)
         
@@ -404,7 +421,8 @@
             local fighting = (status.state == "8")
             if fighting and not Caster.is_fighting then
                 Caster.is_fighting = true
-                Caster.can_backstab = true 
+                Caster.can_backstab = true
+                Caster.backstab_pending = false 
                 if Caster.enabled then
                     if Caster.cfg.opener_on and Caster.cfg.opener ~= "" then Execute(Caster.cfg.opener) end
                     Caster.do_cast()
@@ -413,7 +431,7 @@
                 Caster.is_fighting = false
                 if Caster.cfg.heal_on and Caster.cfg.heal ~= "" then Execute(Caster.cfg.heal) end
                 if Caster.cfg.consume then Execute("consume") end
-                Caster.using_alt = false; Caster.temp_disable = false; Caster.pause_cast = false; Caster.last_recast_time = 0
+                Caster.using_alt = false; Caster.temp_disable = false; Caster.pause_cast = false; Caster.last_recast_time = 0; Caster.backstab_pending = false
             end
         end
     end
