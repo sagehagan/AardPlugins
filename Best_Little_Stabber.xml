@@ -1,0 +1,457 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="Best_Little_Stabber"
+   author="Heracles"
+   id="b1e8d7a2f9c4e5d6a7b8c9d0"
+   language="Lua"
+   purpose="High-Fidelity Learning Tracker"
+   save_state="y"
+   version="11.11"
+   >
+</plugin>
+
+<triggers>
+  <trigger enabled="y" match="^\{roomchars\}$" regexp="y" script="room_start" omit_from_output="y" sequence="10" />
+  <trigger enabled="y" match="^\{/roomchars\}$" regexp="y" script="room_end_trigger" omit_from_output="y" sequence="10" />
+  <trigger enabled="n" group="room_capture" match="^(.*)$" regexp="y" script="process_mob_line" sequence="100" />
+  <trigger enabled="y" match="^.*Your backstab does .* to (?<target>.*)! \[.*\]$" regexp="y" script="backstab_success" sequence="10" />
+  <trigger enabled="y" match="^They aren't here\.$" regexp="y" script="backstab_fail_missing" sequence="10" />
+  <trigger enabled="y" match="^(.*) has divine protection\.$" regexp="y" script="backstab_fail_protected" sequence="1" />
+  <trigger 
+  enabled="y" 
+  match="^.*Your backstab (?:does|misses) .* to (?&lt;target&gt;.*)! \[.*\]$" 
+  regexp="y" 
+  script="backstab_success" 
+  sequence="10" 
+/>
+</triggers>
+
+<aliases>
+  <alias match="^bls$" enabled="y" regexp="y" script="bls_init_attempt" />
+  <alias match="^bls auto$" enabled="y" regexp="y" script="bls_auto_start" />
+  <alias match="^bls stop$" enabled="y" regexp="y" script="bls_auto_stop" />
+  <alias match="^bls flag$" enabled="y" regexp="y" script="manual_flag_protected" />
+  <alias match="^bls (help|status|debug|list|on|off)$" enabled="y" regexp="y" script="bls_control" />
+  <alias match="^bls set (?<id>\d+) (?<key>\w+)$" enabled="y" regexp="y" script="bls_set_keyword" />
+  <alias match="^bls remove (?<id>\d+)$" enabled="y" regexp="y" script="bls_remove_entry" />
+  <alias match="^bls wipe( confirm)?$" enabled="y" regexp="y" script="bls_wipe_handler" />
+</aliases>
+
+<script>
+<![CDATA[
+local sqlite3 = require "sqlite3"
+local db_path = GetInfo(6) .. "BestLittleStabber.db"
+local db = nil
+
+gmcpdata = { char = { status = {} }, room = { info = {} } }
+local state = {
+    last_combat_state = 0,
+    room_is_cleared = false
+}
+
+local target_queue = {}
+local raw_buffer = ""
+local last_attempted_keyword = nil
+local last_keyword_index = 1
+local fail_counter = 0
+local MAX_FAILS = 10 
+local auto_mode = false
+local trust_queue = true
+local waiting_for_idle = false
+local attack_pending = false
+local debug_mode = (GetVariable("debug_mode") == "1")
+local plugin_enabled = true 
+
+local noise_words = {
+    ["a"]=true, ["an"]=true, ["the"]=true, ["some"]=true, ["at"]=true, ["in"]=true,
+    ["on"]=true, ["of"]=true, ["with"]=true, ["for"]=true, ["is"]=true, ["it"]=true,
+    ["its"]=true, ["one"]=true, ["another"]=true, ["upon"]=true, ["here"]=true, 
+    ["this"]=true, ["to"]=true, ["ones"]=true, ["fixate"]=true, ["focus"]=true,
+    ["curiously"]=true, ["that"]=true, ["around"]=true, ["beside"]=true
+}
+
+function OnPluginInstall()
+    init_database()
+    ColourNote("cyan", "", "[Best Little Stabber] ", "silver", "", "V11.11 Connected to DB - Type ", "lime", "", "bls help", "silver", "", " to begin.")
+end
+
+function init_database()
+    db = sqlite3.open(db_path)
+    if not db then Note("[BLS] ERROR: Could not open database file.") return end
+    db:exec([[
+        CREATE TABLE IF NOT EXISTS mob_keywords (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            mob_key TEXT UNIQUE, 
+            long_name TEXT, 
+            keyword TEXT, 
+            area TEXT, 
+            short_name TEXT, 
+            ignored INTEGER DEFAULT 0,
+            manual_required INTEGER DEFAULT 0,
+            UNIQUE(long_name, area)
+        );
+    ]])
+end
+
+function debug_log(category, msg, color)
+    if not debug_mode then return end
+    ColourNote("gray", "", "[", "white", "", "BLS Debug", "gray", "", "] ", color or "silver", "", category .. ": ", "silver", "", msg)
+end
+
+function fire_cleared_event()
+    debug_log("Event", "Room cleared. Broadcasting status.", "lime")
+    BroadcastPlugin(1, "room_cleared")
+    state.room_is_cleared = false
+end
+
+function OnPluginBroadcast(msg, id, name, text)
+    if (id == '3e7dedbe37e44942dd46d264') then
+        local res, gmcparg = CallPlugin(id, "gmcpval", "room")
+        if res == 0 then loadstring("gmcpdata.room = " .. gmcparg)() end
+        res, gmcparg = CallPlugin(id, "gmcpval", "char")
+        if res == 0 then loadstring("gmcpdata.char = " .. gmcparg)() end
+        
+        if text == "char.status" then
+            local status = gmcpdata.char.status or {}
+            local current_state = tonumber(status.state or 0)
+            
+            -- Detect transition out of combat (State 8)
+            if state.last_combat_state == 8 and current_state ~= 8 then
+                debug_log("Combat", "Combat ended. State: " .. current_state, "yellow")
+                
+                if auto_mode and #target_queue > 0 then
+                    debug_log("Auto", "Chain-striking next mob...", "lime")
+                    -- A tiny delay ensures the MUD is ready for the next command
+                    DoAfterSpecial(0.3, "bls_init_attempt()", 12)
+                elseif #target_queue == 0 then
+                    fire_cleared_event()
+                end
+            end
+            state.last_combat_state = current_state
+        end
+    end
+end
+
+function get_area_name()
+    return gmcpdata.room.info.zone or "Global"
+end
+
+function bls_auto_start()
+    auto_mode = true
+    debug_log("Action", "Automation engaged.", "lime")
+    bls_init_attempt()
+end
+
+function bls_auto_stop()
+    auto_mode = false
+    waiting_for_idle = false
+    debug_log("Action", "Automation stopped.", "red")
+end
+
+function bls_init_attempt()
+    if not plugin_enabled then return end
+    if not trust_queue or #target_queue == 0 then
+        attack_pending = true
+        debug_log("Sync", "Untrusted/Empty Queue. Looking...", "yellow")
+        Send("look")
+    else
+        bls_execute()
+    end
+end
+
+function room_start()
+    target_queue = {}
+    raw_buffer = ""
+    trust_queue = true 
+    state.room_is_cleared = false
+    EnableTriggerGroup("room_capture", true)
+end
+
+function process_mob_line(name, line, wildcards)
+    local text = wildcards[1]
+    if text:find("%(Player%)") or text:find("%(Charmed%)") or text:find("is fighting") then return end
+    
+    if text:match("^%s*%(") or text:match("^%s*[A-Z]") then
+        if raw_buffer ~= "" then handle_captured_mob(trim(raw_buffer:gsub("%b()", ""))) end
+        raw_buffer = text
+    else
+        raw_buffer = raw_buffer .. " " .. trim(text)
+    end
+    if text:match("%.%s*$") then
+        handle_captured_mob(trim(raw_buffer:gsub("%b()", "")))
+        raw_buffer = ""
+    end
+end
+
+function handle_captured_mob(mob_long)
+    if mob_long == "" then return end
+    local area = get_area_name()
+    local exists, keyword, ignored, manual = false, "", 0, 0
+    
+    local stmt = db:prepare("SELECT keyword, ignored, manual_required FROM mob_keywords WHERE long_name = ? AND area = ?")
+    if stmt then
+        stmt:bind_values(mob_long, area)
+        if stmt:step() == sqlite3.ROW then 
+            exists = true
+            keyword = stmt:get_values()[1] or ""
+            ignored = stmt:get_values()[2] or 0
+            manual = stmt:get_values()[3] or 0
+        end
+        stmt:finalize()
+    end
+
+    if ignored == 1 then 
+        debug_log("Queue", "SKIPPED (Protected): " .. mob_long, "red")
+    elseif manual == 1 and keyword == "" then
+        debug_log("Queue", "SKIPPED (Manual Req): " .. mob_long, "yellow")
+    else
+        table.insert(target_queue, mob_long)
+        if not exists then
+            debug_log("Queue", "Recording New Target: " .. mob_long, "orange")
+            trust_queue = false
+            db:exec(string.format("INSERT INTO mob_keywords (mob_key, long_name, area, keyword, short_name, ignored, manual_required) VALUES (%s, %s, %s, '', '', 0, 0)", 
+                fixsql(mob_long..":"..area), fixsql(mob_long), fixsql(area)))
+        elseif keyword == "" then
+            debug_log("Queue", "Learning Required: " .. mob_long, "orange")
+            trust_queue = false
+        else
+            debug_log("Queue", "Known Target: " .. mob_long, "chartreuse")
+        end
+    end
+end
+
+function room_end_trigger()
+    EnableTriggerGroup("room_capture", false)
+    if raw_buffer ~= "" then handle_captured_mob(trim(raw_buffer:gsub("%b()", ""))) end
+    debug_log("Room", "Capture complete. Queue size: " .. #target_queue, "cyan")
+    
+    if #target_queue == 0 then
+        fire_cleared_event()
+    elseif attack_pending then
+        -- This only fires if you manually typed 'bls' or 'bls auto'
+        attack_pending = false
+        bls_execute()
+    else
+        debug_log("Sync", "Room data updated. Standing by.", "silver")
+    end
+end
+
+function bls_execute()
+    if #target_queue == 0 then return end
+    local area, mob_long = get_area_name(), target_queue[1]
+    local keyword, row_id = "", 0
+    local stmt = db:prepare("SELECT keyword, id FROM mob_keywords WHERE long_name = ? AND area = ?")
+    if stmt then
+        stmt:bind_values(mob_long, area)
+        if stmt:step() == sqlite3.ROW then 
+            keyword = stmt:get_values()[1] or "" 
+            row_id = stmt:get_values()[2] or 0
+        end
+        stmt:finalize()
+    end
+
+    if keyword == "" then
+        local words = {}
+        for w in mob_long:gsub("[%p]", ""):gmatch("%w+") do
+            if not noise_words[w:lower()] then table.insert(words, w) end
+        end
+        
+        if #words == 0 or last_keyword_index > #words then
+            ColourNote("white", "red", " [!] MANUAL INTERVENTION: No valid keywords for ID " .. row_id)
+            db:exec(string.format("UPDATE mob_keywords SET manual_required = 1 WHERE id = %d", row_id))
+            table.remove(target_queue, 1)
+            last_keyword_index = 1
+            if #target_queue == 0 then fire_cleared_event() else bls_init_attempt() end
+            return
+        end
+        
+        keyword = words[last_keyword_index] or words[1]
+        debug_log("Trial", "Testing Trial Keyword [" .. keyword .. "] for: " .. mob_long, "magenta")
+    else
+        debug_log("Action", "Attacking " .. mob_long .. " with [" .. keyword .. "]", "lime")
+    end
+    last_attempted_keyword = keyword
+    Send("backstab " .. keyword)
+end
+
+function backstab_success(name, line, wildcards)
+    local hit_short, area, mob_long = trim(wildcards.target), get_area_name(), table.remove(target_queue, 1)
+    fail_counter, last_keyword_index = 0, 1
+    
+    if mob_long then
+        debug_log("Discovery", "SUCCESS! Saving [" .. last_attempted_keyword .. "] for " .. mob_long, "chartreuse")
+        db:exec(string.format("UPDATE mob_keywords SET keyword = %s, short_name = %s, ignored = 0, manual_required = 0 WHERE long_name = %s AND area = %s", 
+            fixsql(last_attempted_keyword), fixsql(hit_short), fixsql(mob_long), fixsql(area)))
+    end
+    
+    if #target_queue == 0 then
+        -- This tells the GMCP handler that the room is finished
+        state.room_is_cleared = true
+        debug_log("Auto", "Queue empty. Room cleared.", "silver")
+    elseif auto_mode then 
+        -- Ensure the room isn't flagged as cleared so the GMCP loop continues
+        state.room_is_cleared = false
+        debug_log("Auto", "Target down. Waiting for combat end to strike next.", "cyan")
+    end
+end
+
+function backstab_fail_protected(name, line, wildcards)
+    local area, mob_long = get_area_name(), table.remove(target_queue, 1)
+    debug_log("Discovery", "Target protected. Flagging " .. (mob_long or "unknown"), "red")
+    if mob_long then
+        db:exec(string.format("UPDATE mob_keywords SET ignored = 1 WHERE long_name = %s AND area = %s", fixsql(mob_long), fixsql(area)))
+    end
+    
+    if #target_queue == 0 then
+        fire_cleared_event()
+    elseif auto_mode then 
+        bls_init_attempt() 
+    end
+end
+
+function backstab_fail_missing()
+    -- Reset fail counter immediately
+    fail_counter = 0
+    
+    -- Log the failure
+    debug_log("Trial", "Trial [" .. last_attempted_keyword .. "] invalid. Moving to next keyword...", "red")
+    
+    -- Increment the index to force the next word in the list immediately
+    last_keyword_index = last_keyword_index + 1
+    
+    -- Execute again with the new index
+    bls_execute()
+end
+
+function bls_control(name, line, wildcards)
+    local cmd = wildcards[1]
+    if cmd == "on" then plugin_enabled = true; Note("[BLS] Status: Online")
+    elseif cmd == "off" then plugin_enabled = false; auto_mode = false; Note("[BLS] Status: Offline")
+    elseif cmd == "debug" then debug_mode = not debug_mode; SetVariable("debug_mode", debug_mode and "1" or "0"); Note("[BLS] Debugging: " .. (debug_mode and "ON" or "OFF"))
+    elseif cmd == "status" then display_status()
+    elseif cmd == "help" then display_help()
+    elseif cmd == "list" then display_list() end
+end
+
+function bls_set_keyword(name, line, wildcards)
+    db:exec(string.format("UPDATE mob_keywords SET keyword = %s, ignored = 0, manual_required = 0 WHERE id = %s", fixsql(wildcards.key), wildcards.id))
+    Note("[BLS] Manual Override: ID " .. wildcards.id .. " set to keyword '" .. wildcards.key .. "'.")
+end
+
+function manual_flag_protected()
+    if #target_queue > 0 then
+        local area, mob_long = get_area_name(), table.remove(target_queue, 1)
+        db:exec(string.format("UPDATE mob_keywords SET ignored = 1 WHERE long_name = %s AND area = %s", fixsql(mob_long), fixsql(area)))
+        Note("[BLS] Current target flagged as PROTECTED in database.")
+        if #target_queue == 0 then fire_cleared_event() elseif auto_mode then bls_init_attempt() end
+    end
+end
+
+function bls_remove_entry(name, line, wildcards)
+    db:exec("DELETE FROM mob_keywords WHERE id = " .. wildcards.id)
+    Note("[BLS] Record ID " .. wildcards.id .. " removed.")
+end
+
+function bls_wipe_handler(name, line, wildcards)
+    if wildcards[1] == " confirm" then 
+        db:exec("DELETE FROM mob_keywords; DELETE FROM sqlite_sequence WHERE name='mob_keywords';")
+        Note("[BLS] DATABASE WIPE COMPLETE.")
+    else Note("Usage: bls wipe confirm") end
+end
+
+function fixsql(s) return "'" .. (tostring(s):gsub("'", "''")) .. "'" end
+function trim(s) return s:match("^%s*(.-)%s*$") or "" end
+
+function display_status()
+    local count, ignored_count, manual_count = 0, 0, 0
+    for row in db:nrows("SELECT COUNT(*) as c FROM mob_keywords") do count = row.c end
+    for row in db:nrows("SELECT COUNT(*) as c FROM mob_keywords WHERE ignored = 1") do ignored_count = row.c end
+    for row in db:nrows("SELECT COUNT(*) as c FROM mob_keywords WHERE manual_required = 1") do manual_count = row.c end
+    
+    print("")
+    ColourNote("cyan", "", " .-----------------------------------------------------------------.")
+    ColourTell("cyan", "", " | ") ColourTell("white", "", string.format("%-42s", "BEST LITTLE STABBER - SYSTEM STATUS")) ColourTell("cyan", "", " v11.11               |") print("")
+    ColourNote("cyan", "", " '-----------------------------------------------------------------'")
+    
+    local function stat_row(label, val, val_col)
+        ColourTell("cyan", "", "  > ") ColourTell("silver", "", string.format("%-15s", label)) ColourNote(val_col or "white", "", ": " .. val)
+    end
+
+    stat_row("Power State", plugin_enabled and "ONLINE" or "OFFLINE", plugin_enabled and "lime" or "red")
+    stat_row("Module Mode", auto_mode and "AUTOMATED" or "MANUAL", auto_mode and "lime" or "silver")
+    stat_row("Queue Trust", trust_queue and "TRUSTED" or "LEARNING", trust_queue and "lime" or "orange")
+    stat_row("Database Size", count .. " Records")
+    stat_row("Manual Required", manual_count .. " Records", "yellow")
+    stat_row("Blacklist", ignored_count .. " Records", "red")
+    stat_row("Current Queue", #target_queue .. " Active", #target_queue > 0 and "cyan" or "gray")
+    print("")
+end
+
+function display_help()
+    local b = "cyan"
+    print("")
+    ColourNote(b, "", " .-----------------------------------------------------------------.")
+    ColourTell(b, "", " | ") ColourTell("white", "", string.format("%-63s", "BEST LITTLE STABBER - COMMAND CONSOLE")) ColourNote(b, "", " |")
+    ColourNote(b, "", " '-----------------------------------------------------------------'")
+    
+    local function h_row(cmd, desc)
+        ColourTell("lime", "", string.format("  %-18s", cmd)) ColourNote("silver", "", desc)
+    end
+
+    ColourNote("yellow", "", "  [ CORE COMMANDS ]")
+    h_row("bls auto", "Engage automation to clear rooms and learn mobs.")
+    h_row("bls stop", "Disengage the automatic loop immediately.")
+    h_row("bls on/off", "Enable or disable the plugin logic.")
+    
+    ColourNote("yellow", "", "\n  [ SYSTEM & FEED ]")
+    h_row("bls status", "View system metrics and database health.")
+    h_row("bls list", "Show the categorized database records.")
+    h_row("bls debug", "Toggle high-fidelity GMCP and trial logs.")
+    
+    ColourNote("yellow", "", "\n  [ DATABASE TOOLS ]")
+    h_row("bls set # <key>", "Force a keyword for a specific record ID.")
+    h_row("bls flag", "Flag the current target as Protected/Ignore.")
+    h_row("bls remove #", "Permanently delete a record by ID.")
+    h_row("bls wipe confirm", "Clear every record in the database.")
+    
+    ColourNote("yellow", "", "\n  [ KEYWORD STATUS LEGEND ]")
+    ColourTell("gray", "", "  (K) ") ColourTell("lime", "", "Known ")
+    ColourTell("gray", "", "(L) ") ColourTell("orange", "", "Learning ")
+    ColourTell("gray", "", "(M) ") ColourTell("yellow", "", "Manual Needed ")
+    ColourTell("gray", "", "(I) ") ColourTell("red", "", "Ignored")
+    print("\n")
+end
+
+function display_list()
+    local b = "cyan"
+    print("")
+    ColourNote(b, "", "ID   | Keyword      | ST  | Area       | Short   Name              | Long Name")
+    ColourNote("gray", "", "-----+--------------+-----+------------+---------------------------+-------------------")
+    for row in db:nrows("SELECT * FROM mob_keywords ORDER BY id DESC LIMIT 30") do
+        local id = string.format("%-4s", tostring(row.id))
+        local key = string.format("%-12s", (row.keyword ~= "" and row.keyword or "---"):sub(1,12))
+        local area = string.format("%-10s", row.area:sub(1,10))
+        local short = string.format("%-25s", (row.short_name ~= "" and row.short_name or "---"):sub(1,25))
+        local sym, col = "(K)", "lime"
+        if row.ignored == 1 then sym, col = "(I)", "red"
+        elseif row.manual_required == 1 then sym, col = "(M)", "yellow"
+        elseif row.keyword == "" then sym, col = "(L)", "orange" end
+
+        -- Visual Truncation of Long Name to 50 characters
+        local d_long = row.long_name
+        if #d_long > 50 then d_long = d_long:sub(1, 50) .. "..." end
+        
+        ColourTell("yellow", "", id) ColourTell("gray", "", " | ")
+        ColourTell("white", "", key) ColourTell("gray", "", " | ")
+        ColourTell(col, "", sym) ColourTell("gray", "", " | ")
+        ColourTell("silver", "", area) ColourTell("gray", "", " | ")
+        ColourTell("chartreuse", "", short) ColourTell("gray", "", " | ")
+        ColourNote("silver", "", d_long)
+    end
+    print("")
+end
+]]>
+</script>
+</muclient>
