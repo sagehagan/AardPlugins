@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+
+<muclient>
+<plugin
+   name="Predict_Double"
+   author="Heracles"
+   id="dbcf98147af347b80d74fc70"
+   language="Lua"
+   purpose="Show Me The Pups"
+   date_written="2024-05-20"
+   requires="4.00"
+   version="5.0"
+   >
+<description trim="y">
+<![CDATA[
+Predict Double: Show Me The Pups
+Use 'pd <channel>' to guess when the next million mob double will occur.
+]]>
+</description>
+</plugin>
+
+<include name="constants.lua"/>
+
+<triggers>
+  <trigger
+   enabled="n"
+   match="^Mob Deaths\s+:\s+([+-]?[0-9,]+)\s+([+-]?[0-9,]+)$"
+   regexp="y"
+   script="OnMobDeaths"
+   group="pd_triggers"
+   sequence="100"
+  />
+  <trigger
+   enabled="n"
+   match="^ \* The system time is\s+: (\d+):(\d+):(\d+) - \w+ (\d+) (\w+), (\d+)"
+   regexp="y"
+   script="OnSystemTime"
+   group="pd_triggers"
+   sequence="100"
+  />
+  <trigger
+   enabled="n"
+   match="^ \* Aardwolf last restarted on \: (\d+)\:(\d+)\:(\d+) \- \w+ (\d+) (\w+)\, (\d+)"
+   regexp="y"
+   script="OnRebootTime"
+   group="pd_triggers"
+   sequence="100"
+  />
+</triggers>
+
+<aliases>
+  <alias
+   match="^pd( .*|)$"
+   enabled="y"
+   regexp="y"
+   send_to="12"
+   sequence="100"
+  >
+  <send>
+    PredictDouble = PredictDouble or {}
+    local input = trim("%1")
+    
+    if input == "" then
+        PredictDouble.target = "echo"
+    else
+        PredictDouble.target = input
+    end
+    
+    EnableTriggerGroup("pd_triggers", true)
+    Execute("gamestat 5")
+    Execute("realtime")
+  </send>
+  </alias>
+</aliases>
+
+<script>
+<![CDATA[
+local stats = {}
+PredictDouble = {}
+
+function OnPluginInstall()
+    ColourNote("Cyan", "", "Predict Double by Heracles loaded. Type ", "Yellow", "", "pd <chan>", "Cyan", "", " to see the next million mob double.")
+end
+
+local function get_mud_time(w1, w2, w3, w4, w5, w6)
+    local months = {Jan=1, Feb=2, Mar=3, Apr=4, May=5, Jun=6, Jul=7, Aug=8, Sep=9, Oct=10, Nov=11, Dec=12}
+    return os.time({
+        year = tonumber(w6), month = months[w5], day = tonumber(w4), 
+        hour = tonumber(w1), min = tonumber(w2), sec = tonumber(w3)
+    })
+end
+
+function OnMobDeaths(name, line, wildcards)
+    stats.since_reboot = tonumber((wildcards[1]:gsub(",", "")))
+    local since_added = tonumber((wildcards[2]:gsub(",", "")))
+    stats.needed = 1000000 - (since_added % 1000000)
+end
+
+function OnRebootTime(name, line, wildcards)
+    stats.reboot_ts = get_mud_time(wildcards[1], wildcards[2], wildcards[3], wildcards[4], wildcards[5], wildcards[6])
+end
+
+function OnSystemTime(name, line, wildcards)
+    local sys_ts = get_mud_time(wildcards[1], wildcards[2], wildcards[3], wildcards[4], wildcards[5], wildcards[6])
+
+    local diff_mins = math.max(1, (sys_ts - stats.reboot_ts) / 60)
+    local kpm = math.floor(stats.since_reboot / diff_mins)
+    
+    local mins_left = (kpm > 0) and math.floor(stats.needed / kpm) or 0
+    local days = math.floor(mins_left / 1440)
+    local hours = math.floor((mins_left % 1440) / 60)
+    local mins = mins_left % 60
+
+    -- Updated Output: Label changed to 'Mob Deaths', added Bars '|' as separators
+    local output = string.format(
+        "@R[@DPredict Double@R] @DMob Deaths: @w%s @R| @DAvg KPM: @w%d @R| @DETA: @Y%dd %dh %dm",
+        comma_value(stats.needed), kpm, days, hours, mins
+    )
+
+    if PredictDouble.target == "echo" then
+        AnsiNote(ColoursToANSI(output))
+    else
+        Execute(PredictDouble.target .. " " .. output)
+    end
+    
+    EnableTriggerGroup("pd_triggers", false)
+end
+
+function comma_value(n)
+    local s = tostring(math.floor(n))
+    return s:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+end
+
+function trim(s) return s:match("^%s*(.-)%s*$") end
+
+function ColoursToANSI(str)
+    local aard_to_ansi = {
+        ["@R"] = ANSI(31, 1), 
+        ["@G"] = ANSI(32, 1),
+        ["@Y"] = ANSI(33, 1), 
+        ["@C"] = ANSI(36, 1), 
+        ["@W"] = ANSI(37, 1),
+        ["@D"] = ANSI(34, 1), 
+        ["@w"] = ANSI(37, 0),
+    }
+    return (str:gsub("(@[RGYCWDw])", aard_to_ansi))
+end
+]]>
+</script>
+</muclient>
