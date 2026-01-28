@@ -42,7 +42,7 @@
   <trigger enabled="y" regexp="y" match="^.*? crumbles into ([\d,]+) gold pieces\.$" script="TrgGoldCrumble" sequence="10" />
   <trigger enabled="y" regexp="y" match="^You get ([\d,]+) gold coins from .* corpse of .*?\.$" script="TrgGoldCorpse" sequence="10" />
   <trigger enabled="y" regexp="y" match="^.*? shares [\d,]+ gold coins with you\. Your share is ([\d,]+) gold\.$" script="TrgGoldSplit" sequence="10" />
-  <trigger enabled="y" regexp="y" match="^\w+ gives you ([\d,]+) gold coins for the corpse of .*?\.$" script="TrgGoldSac" sequence="10" />
+  <trigger enabled="y" regexp="y" match="^\w+ gives you ([\d,]+) gold coins for .* corpse of .*?\.$" script="TrgGoldSac" sequence="10" />
   <trigger enabled="y" regexp="y" match="^You sell .*? to .*? for ([\d,]+) gold\.$" script="TrgGoldSell" sequence="10" />
   <trigger enabled="y" regexp="y" match="^You haggle with .*? for an extra ([\d,]+) gold\.$" script="TrgGoldHaggle" sequence="10" />
 
