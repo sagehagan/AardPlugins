@@ -16,13 +16,13 @@
    save_state="n"
    date_written="2008-07-28"
    requires="4.00"
-   version="1.1"
+   version="1.2"
    >
 
 <description trim="y">
 Copies text from the output window to the clipboard, with
 Aardwolf colour codes. Pastes to mudbin at:
-http://mudbin.tk/
+http://mb.aardwolfboot.com/
 
 To use: highlight text and then:
 
@@ -39,14 +39,14 @@ Ctrl+P copy and posts to mudbin (like Ctrl+C but different)
 
 <script>
 <![CDATA[
-local mudbin_url = "http://mudbin.tk/"
+local mudbin_url = "http://mb.aardwolfboot.com/"
 local async = require "async"
 
 -- functions for handling Aardwolf color codes
-dofile (GetPluginInfo (GetPluginID(), 20) .. "aardwolf_colors.lua")
+dofile (GetPluginInfo (GetPluginID(), 20) .. "..\\lua\\aardwolf_colors.lua")
 
 function OnPluginListChanged()
-   dofile "lua/aard_requirements.lua"
+   dofile (GetPluginInfo (GetPluginID(), 20) .. "..\\lua\\aard_requirements.lua")
 end
 
 -- Thank you, Shaun Biggs, for taking your time to write the CopyScript
