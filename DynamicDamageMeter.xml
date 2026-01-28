@@ -8,22 +8,22 @@
    language="Lua"
    purpose="Personal and Group Damage Tracking"
    save_state="y"
-   date_written="2026-01-23"
+   date_written="2026-01-25"
    requires="5.06"
-   version="6.3"
+   version="7.1"
    >
 </plugin>
 
 <triggers>
   <trigger
    enabled="y" regexp="y"
-   match="^Your (.+?) reflects the (.+?) back at (.+?)!$"
+   match="^Your (?<ref_with>.+?) reflects the (?<ref_what>.+?) back at (?<ref_at>.+?)!$"
    script="prepare_reflection" group="dmg_triggers" sequence="1"
   ></trigger>
 
   <trigger
    enabled="n" regexp="y" 
-   match="^(?:\*?\[\d+\] )?Your (?<ability>.+?)(?=\s(?:does|misses|tickles|bruises|scratches|grazes|nicks|scars|hits|injures|wounds|mauls|maims|mangles|mars|LACERATES|DECIMATES|DEVASTATES|ERADICATES|OBLITERATES|EXTIRPATES|INCINERATES|MUTILATES|DISEMBOWELS|MASSACRES|DISMEMBERS|RENDS|BLASTS|DEMOLISHES|SHREDS|DESTROYS|PULVERIZES|VAPORIZES|ATOMIZES|ASPHYXIATES|RAVAGES|FISSURES|LIQUIDATES|EVAPORATES|SUNDERS|TEARS|WASTES|CREMATES|ANNIHILATES|IMPLODES|EXTERMINATES|SHATTERS|SLAUGHTERS|RUPTURES|NUKES|GLACIATES|METEORITES|SUPERNOVAS|[-<\[=+])) (.*) \[(?<damage>[\d,]+)\].?$"
+   match="^(?:\*?\[(?<hits>\d+)\] )?Your (?<ability>.+?)(?=\s(?:does|misses|tickles|bruises|scratches|grazes|nicks|scars|hits|injures|wounds|mauls|maims|mangles|mars|LACERATES|DECIMATES|DEVASTATES|ERADICATES|OBLITERATES|EXTIRPATES|INCINERATES|MUTILATES|DISEMBOWELS|MASSACRES|DISMEMBERS|RENDS|BLASTS|DEMOLISHES|SHREDS|DESTROYS|PULVERIZES|VAPORIZES|ATOMIZES|ASPHYXIATES|RAVAGES|FISSURES|LIQUIDATES|EVAPORATES|SUNDERS|TEARS|WASTES|CREMATES|ANNIHILATES|IMPLODES|EXTERMINATES|SHATTERS|SLAUGHTERS|RUPTURES|NUKES|GLACIATES|METEORITES|SUPERNOVAS|[-<\[=+])) (.*) \[(?<damage>[\d,]+)\].?$"
    script="dynamic_tracking" group="dmg_triggers" sequence="2"
    ignore_case="y"
   ></trigger>
@@ -34,12 +34,19 @@
    script="group_tracking" group="dmg_triggers" sequence="3"
    ignore_case="y"
   ></trigger>
+
+  <trigger
+   enabled="n" regexp="y" match="^.*$"
+   script="clear_reflection" group="dmg_triggers" sequence="20"
+  ></trigger>
 </triggers>
 
 <aliases>
   <alias match="^dmg auto$" enabled="y" regexp="y" script="toggle_meter" />
+  <alias match="^dmg debug$" enabled="y" regexp="y" script="toggle_debug" />
   <alias match="^dmg reset$" enabled="y" regexp="y" script="DamageStats" />
   <alias match="^dmg full$" enabled="y" regexp="y" script="full_breakdown" />
+  <alias match="^dmg hits(?:\s+(.*))?$" enabled="y" regexp="y" script="hit_breakdown" />
   <alias match="^dmg rep (.*?)$" enabled="y" regexp="y" script="report_meter" />
   <alias match="^dmg grep (.*?)$" enabled="y" regexp="y" script="report_group" />
   <alias match="^dmg help$" enabled="y" regexp="y" script="show_help" />
@@ -48,10 +55,12 @@
 <script>
 <![CDATA[
 local AllTimeDamage = {}
+local HitTracking = {} 
 local GroupDamage = {}
 local valid_group_members = {}
 local my_name = GetVariable("my_name") or "Heracles"
 local meter_active = false 
+local debug_active = false
 local total_combat_time = 0
 local os_start = 0
 local curr_state = ""
@@ -71,22 +80,34 @@ local melee_types = {
 }
 
 function OnPluginInstall() 
-    ColourNote("cyan", "", ">>> ", "white", "", "Dynamic Damage Tracking Loaded. Check ", "yellow", "", "dmg help", "white", "", " for commands.")
+    reflecting = false
+    ColourNote("cyan", "", ">>> ", "white", "", "Dynamic Damage Tracking 7.1 Loaded. Use ", "yellow", "", "dmg help", "white", "", " for commands.")
+end
+
+function debug_msg(msg)
+    if debug_active then Note("DEBUG: " .. msg) end
 end
 
 function show_help()
     Note("")
     ColourNote("darkorange", "", "==========================================================")
-    ColourNote("yellow", "",     "            DYNAMIC DAMAGE TRACKING v6.3                ")
+    ColourNote("yellow", "",     "            DYNAMIC DAMAGE TRACKING v7.1                ")
     ColourNote("darkorange", "", "==========================================================")
     ColourNote("white", "", " dmg auto       ", "cyan", "", "- Toggle tracking [Currently: " .. (meter_active and "ON" or "OFF") .. "]")
-    ColourNote("white", "", " dmg full       ", "cyan", "", "- Segmented Personal Breakdown (Melee/Spells/Reflect)")
-    ColourNote("white", "", " dmg rep [chan] ", "cyan", "", "- Public Personal Report (Top 5 + Buckets)")
-    ColourNote("white", "", " dmg grep [chan]", "cyan", "", "- Public Group Report (Present members only)")
-    ColourNote("white", "", " dmg reset      ", "cyan", "", "- Wipe all data and reset combat timers")
+    ColourNote("white", "", " dmg debug      ", "cyan", "", "- Toggle debug messages [Currently: " .. (debug_active and "ON" or "OFF") .. "]")
+    ColourNote("white", "", " dmg full       ", "cyan", "", "- Segmented Personal Breakdown")
+    ColourNote("white", "", " dmg hits [rep] ", "cyan", "", "- Average Hit Statistics")
+    ColourNote("white", "", " dmg rep [chan] ", "cyan", "", "- Public Personal Report")
+    ColourNote("white", "", " dmg grep [chan]", "cyan", "", "- Public Group Report")
+    ColourNote("white", "", " dmg reset      ", "cyan", "", "- Wipe all data and timers")
     ColourNote("white", "", " dmg help       ", "cyan", "", "- Display this menu")
     ColourNote("darkorange", "", "==========================================================")
     Note("")
+end
+
+function truncate(str, len)
+    if #str > len then return string.sub(str, 1, len-2) .. ".." end
+    return str
 end
 
 function toggle_meter()
@@ -95,12 +116,24 @@ function toggle_meter()
     ColourNote("red", "", " >>> ", "white", "", "Damage Meter: ", meter_active and "green" or "red", "", meter_active and "ENABLED" or "DISABLED")
 end
 
-function DamageStats()
-    AllTimeDamage = {}; GroupDamage = {}; total_combat_time = 0; os_start = 0
-    Note(">>> Damage Meter Reset.")
+function toggle_debug()
+    debug_active = not debug_active
+    ColourNote("red", "", " >>> ", "white", "", "Debug Messaging: ", debug_active and "green" or "red", "", debug_active and "ENABLED" or "DISABLED")
 end
 
-function prepare_reflection() reflecting = true end
+function DamageStats()
+    AllTimeDamage = {}; GroupDamage = {}; HitTracking = {}; total_combat_time = 0; os_start = 0; reflecting = false
+    Note(">>> Damage Meter and Hit Tracking Reset.")
+end
+
+function prepare_reflection(name, line, wildcards) 
+    reflecting = true 
+    debug_msg("Reflection event triggered. Priming next hit.")
+end
+
+function clear_reflection()
+    reflecting = false
+end
 
 function clean_ability(str)
     local cleaned = str:gsub("^%s*(.-)%s*$", "%1")
@@ -109,17 +142,29 @@ function clean_ability(str)
 end
 
 function dynamic_tracking(name, line, wildcards)
-    if line:find("warm feeling") or line:find("fills your body") then return end
+    if line:find("warm feeling") or line:find("fills your body") then 
+        reflecting = false
+        return 
+    end
+
     local cleaned_raw = clean_ability(wildcards.ability)
     local ability_name = cleaned_raw:gsub("^%l", string.upper)
     local dmg = tonumber((string.gsub(wildcards.damage or "0", ",", ""))) or 0
+    local hits = tonumber(wildcards.hits) or 1
     
     if dmg > 0 then
         local key = reflecting and ("Reflected: " .. ability_name) or ability_name
         AllTimeDamage[key] = (AllTimeDamage[key] or 0) + dmg
         GroupDamage[my_name] = (GroupDamage[my_name] or 0) + dmg
-        reflecting = false
+        
+        if not HitTracking[key] then HitTracking[key] = { hits = 0, instances = 0, total_dmg = 0 } end
+        HitTracking[key].hits = HitTracking[key].hits + hits
+        HitTracking[key].instances = HitTracking[key].instances + 1
+        HitTracking[key].total_dmg = HitTracking[key].total_dmg + dmg
+        
+        debug_msg(string.format("Recorded Personal: %s | Dmg: %s | Hits: %d | Reflected: %s", ability_name, commas(dmg), hits, tostring(reflecting)))
     end
+    reflecting = false
 end
 
 function group_tracking(name, line, wildcards)
@@ -127,7 +172,9 @@ function group_tracking(name, line, wildcards)
     local dmg = tonumber((string.gsub(wildcards.pdamage or "0", ",", ""))) or 0
     if dmg > 0 then
         GroupDamage[player] = (GroupDamage[player] or 0) + dmg
+        debug_msg(string.format("Recorded Group: %s | Dmg: %s", player, commas(dmg)))
     end
+    reflecting = false
 end
 
 function round(num) return math.floor(num + 0.5) end
@@ -154,32 +201,79 @@ function full_breakdown()
     Note("")
     ColourNote("yellow", "", "--- Full Personal Breakdown (Detailed) ---")
     
-    if #melee > 0 then
-        ColourNote("cyan", "", "Melee Sources")
-        for _, d in ipairs(melee) do
-            ColourNote("white", "", string.format("  %-23s: %15s [%d%%]", d.n, commas(d.v), round((d.v/total)*100)))
+    local function display_section(list, label)
+        if #list > 0 then
+            ColourNote("cyan", "", label)
+            for _, d in ipairs(list) do
+                ColourNote("white", "", string.format("  %-23s: %15s [%d%%]", truncate(d.n, 23), commas(d.v), round((d.v/total)*100)))
+            end
         end
     end
 
-    if #spells > 0 then
-        ColourNote("cyan", "", "Ability/Spell Sources")
-        for _, d in ipairs(spells) do
-            ColourNote("white", "", string.format("  %-23s: %15s [%d%%]", d.n, commas(d.v), round((d.v/total)*100)))
-        end
-    end
-    
-    if #reflect > 0 then
-        ColourNote("cyan", "", "Reflected Sources")
-        for _, d in ipairs(reflect) do
-            ColourNote("white", "", string.format("  %-23s: %15s [%d%%]", d.n, commas(d.v), round((d.v/total)*100)))
-        end
-    end
+    display_section(melee, "Melee Sources")
+    display_section(spells, "Ability/Spell Sources")
+    display_section(reflect, "Reflected Sources")
     
     Note("")
     ColourNote("yellow", "", "Total Damage: " .. commas(total))
     ColourNote("yellow", "", "Combat Time : " .. active_time .. "s")
     ColourNote("yellow", "", "Average DPS : " .. commas(dps))
     Note("")
+end
+
+function hit_breakdown(name, line, wildcards)
+    local rep_arg = wildcards[1] or ""
+    local melee_hits, melee_inst, melee_dmg = 0, 0, 0
+    local reflect_hits, reflect_inst, reflect_dmg = 0, 0, 0
+    local spells = {}
+
+    for k, v in pairs(HitTracking) do
+        if k:find("^Reflected:") then
+            reflect_hits = reflect_hits + v.hits
+            reflect_inst = reflect_inst + v.instances
+            reflect_dmg = reflect_dmg + v.total_dmg
+        elseif melee_types[k:lower()] then
+            melee_hits = melee_hits + v.hits
+            melee_inst = melee_inst + v.instances
+            melee_dmg = melee_dmg + v.total_dmg
+        else
+            table.insert(spells, {n=k, avg_h=v.hits/v.instances, avg_d=v.total_dmg/v.hits, total_h=v.hits})
+        end
+    end
+
+    table.sort(spells, function(a,b) return a.total_h > b.total_h end)
+
+    if rep_arg == "" then
+        Note("")
+        ColourNote("yellow", "", "--- Personal Hit Tracking Breakdown ---")
+        ColourNote("darkgray", "", "  Ability                   Avg Hits/Swing    Avg Dmg/Hit")
+        
+        if melee_inst > 0 then
+            ColourNote("cyan", "", "Melee Hits (Bucket)")
+            ColourNote("white", "", string.format("  %-23s: %10.1f %18s", "Total Melee", melee_hits/melee_inst, commas(melee_dmg/melee_hits)))
+        end
+
+        if #spells > 0 then
+            ColourNote("cyan", "", "Ability/Spell Hits (Individual)")
+            for _, d in ipairs(spells) do
+                ColourNote("white", "", string.format("  %-23s: %10.1f %18s", truncate(d.n, 23), d.avg_h, commas(d.avg_d)))
+            end
+        end
+        
+        if reflect_inst > 0 then
+            ColourNote("cyan", "", "Reflect Hits (Bucket)")
+            ColourNote("white", "", string.format("  %-23s: %10.1f %18s", "Total Reflections", reflect_hits/reflect_inst, commas(reflect_dmg/reflect_hits)))
+        end
+        Note("")
+    else
+        local out = {}
+        if melee_inst > 0 then table.insert(out, string.format("@DMelee: @wAvgHits: %.1f @wAvgDmg: %s", melee_hits/melee_inst, commas(melee_dmg/melee_hits))) end
+        for _, d in ipairs(spells) do
+            table.insert(out, string.format("@D%s: @wAvgHits: %.1f @wAvgDmg: %s", d.n, d.avg_h, commas(d.avg_d)))
+        end
+        if reflect_inst > 0 then table.insert(out, string.format("@DReflect: @wAvgHits: %.1f @wAvgDmg: %s", reflect_hits/reflect_inst, commas(reflect_dmg/reflect_hits))) end
+        Send(rep_arg .. " @R[@DHit Report@R] " .. table.concat(out, " | "))
+    end
 end
 
 function report_meter(name, line, wildcards)
@@ -242,7 +336,10 @@ function OnPluginBroadcast(msg, id, name, text)
         if text == "char.base" then
             local _, pvar = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpval", "char.base")
             local res = loadstring("return " .. pvar)()
-            if res and res.name then my_name = res.name; SetVariable("my_name", my_name) end
+            if res and res.name then 
+                my_name = res.name; SetVariable("my_name", my_name) 
+                debug_msg("Identity set to " .. my_name)
+            end
         elseif text == "group" then
             local _, pvar = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpval", "group")
             local res = loadstring("return " .. pvar)()
@@ -253,15 +350,19 @@ function OnPluginBroadcast(msg, id, name, text)
                 end
             end
             valid_group_members = new_whitelist
+            debug_msg("Group sync updated.")
         elseif text == "char.status" and meter_active then
             local _, pvar = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpval", "char.status")
             local status = loadstring("return " .. pvar)()
             local new_state = (status and status.state) or ""
-            if new_state == "8" and curr_state ~= "8" then os_start = os.time()
+            if new_state == "8" and curr_state ~= "8" then 
+                os_start = os.time()
+                debug_msg("State transition: COMBAT.")
             elseif new_state ~= "8" and curr_state == "8" then
                 if os_start > 0 then
                     total_combat_time = total_combat_time + (os.time() - os_start)
                     os_start = 0
+                    debug_msg("State transition: IDLE.")
                 end
             end
             curr_state = new_state

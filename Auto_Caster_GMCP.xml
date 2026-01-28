@@ -80,6 +80,7 @@
         recast_speed = 2.0,
         can_backstab = true,
         backstab_pending = false, 
+        global_pause_until = 0,
         
         cfg = {
             primary      = GetVariable("primary") or "",
@@ -161,13 +162,18 @@
         end
     end
 
-    function Caster.do_cast()
+        function Caster.do_cast()
+        -- Check Hard Global Cooldown first
+        if os.clock() < Caster.global_pause_until then
+            return 
+        end
+
         if not Caster.enabled or not Caster.is_fighting or Caster.temp_disable then return end
         
+        -- Safety trigger for blocked casts
         if Caster.pause_cast and not Caster.quaff_override then
             Caster.blocked_casts = Caster.blocked_casts + 1
             if Caster.blocked_casts >= 3 then
-                Caster.warn("Safety Trigger: 3 Recasts Blocked. Resuming Fire.")
                 Caster.quaff_override = true
             else return end
         end
@@ -224,14 +230,14 @@
         end
     end
 
-    function Caster.check_vitals()
+        function Caster.check_vitals()
         local now = os.clock()
-        if Caster.pause_cast and (now - Caster.last_quaff) > 3 then 
-            Caster.pause_cast = false 
-            Caster.do_cast()
-        end
+        
+        -- If we are currently in a hard pause, don't even check
+        if now < Caster.global_pause_until then return end
+
         if not Caster.cfg.quaff_on or not Caster.enabled or not Caster.is_fighting then return end
-        if (now - Caster.last_quaff) < 3 then return end
+        
         local current_vitals = parse_gmcp("char.vitals")
         local max_vitals = parse_gmcp("char.maxstats")
         if not current_vitals or not max_vitals then return end
@@ -239,23 +245,21 @@
         for _, k in ipairs({"hp", "mn", "mv"}) do
             local d = Caster.vitals[k]
             local cur, max = tonumber(current_vitals[d.key]), tonumber(max_vitals[d.max_key] or max_vitals["max"..d.key])
+            
             if cur and max and (cur/max*100) < d.pct then
                 local res, count = CallPlugin(INV_ID, "GetConsumeCount", d.inv_type)
                 local num_count = tonumber(count) or 0
                 
-                if debug_mode then
-                    Caster.log(string.format("Inv Check [%s]: Count=%d", d.inv_type, num_count), "cyan")
-                end
-
                 if num_count > 0 then
-                    Caster.log("Low " .. k:upper() .. "! Delaying recast 3s.", "yellow")
-                    Caster.pause_cast = true
-                    for i = 1, d.cnt do Execute("dinv consume " .. d.item) end
-                    Caster.last_quaff = now
+                    Caster.log("Low " .. k:upper() .. "! Global Cooldown active (3s).", "yellow")
+                    
+                    -- LOCK EVERYTHING for 3 seconds
+                    Caster.global_pause_until = now + 3
+                    
+                    for i = 1, d.cnt do 
+                        Execute("dinv consume " .. d.item) 
+                    end
                     return 
-                else
-                    Caster.warn("Low " .. k:upper() .. "! No potions available!")
-                    return
                 end
             end
         end
