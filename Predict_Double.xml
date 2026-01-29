@@ -10,7 +10,7 @@
    purpose="Show Me The Pups"
    date_written="2024-05-20"
    requires="4.00"
-   version="5.0"
+   version="5.1"
    >
 <description trim="y">
 <![CDATA[
@@ -107,15 +107,20 @@ function OnSystemTime(name, line, wildcards)
     local diff_mins = math.max(1, (sys_ts - stats.reboot_ts) / 60)
     local kpm = math.floor(stats.since_reboot / diff_mins)
     
-    local mins_left = (kpm > 0) and math.floor(stats.needed / kpm) or 0
-    local days = math.floor(mins_left / 1440)
-    local hours = math.floor((mins_left % 1440) / 60)
-    local mins = mins_left % 60
+    local total_mins_left = (kpm > 0) and math.floor(stats.needed / kpm) or 0
+    local days = math.floor(total_mins_left / 1440)
+    local hours = math.floor((total_mins_left % 1440) / 60)
+    local mins = total_mins_left % 60
 
-    -- Updated Output: Label changed to 'Mob Deaths', added Bars '|' as separators
+    -- Calculate Local Time Conversion
+    -- Uses current local system time + estimated minutes remaining
+    local local_eta_ts = os.time() + (total_mins_left * 60)
+    local local_eta_str = os.date("%d %b %I:%M%p", local_eta_ts)
+
+    -- Updated Output: Added Local Time Conversion at the end
     local output = string.format(
-        "@R[@DPredict Double@R] @DMob Deaths: @w%s @R| @DAvg KPM: @w%d @R| @DETA: @Y%dd %dh %dm",
-        comma_value(stats.needed), kpm, days, hours, mins
+        "@R[@DPredict Double@R] @DMob Deaths: @w%s @R| @DAvg KPM: @w%d @R| @DETA: @Y%dd %dh %dm @R| @DLocal: @w%s",
+        comma_value(stats.needed), kpm, days, hours, mins, local_eta_str
     )
 
     if PredictDouble.target == "echo" then
