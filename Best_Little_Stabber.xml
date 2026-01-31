@@ -1,0 +1,358 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<muclient>
+<plugin
+   name="Best_Little_Stabber"
+   author="Heracles"
+   id="b1e8d7a2f9c4e5d6a7b8c9d0"
+   language="Lua"
+   purpose="High-Fidelity Learning Tracker"
+   save_state="y"
+   version="18.7"
+   >
+</plugin>
+
+<triggers>
+  <trigger enabled="y" match="^\{roomchars\}$" regexp="y" script="room_start" omit_from_output="y" sequence="10" />
+  <trigger enabled="y" match="^\{/roomchars\}$" regexp="y" script="room_end_trigger" omit_from_output="y" sequence="10" />
+  <trigger enabled="n" group="room_capture" match="^(.*)$" regexp="y" script="process_mob_line" sequence="100" />
+  <trigger enabled="y" match="^.*Your backstab (?:-=- .* -=-|does|misses|.*) (?:.* to |)(.*)(?:! \[.*\]|\.)$" regexp="y" script="backstab_success" sequence="10" />
+  <trigger enabled="y" match="^They aren't here\.$" regexp="y" script="backstab_fail_missing" sequence="10" />
+  <trigger enabled="y" match="^(.*) has divine protection\.$" regexp="y" script="backstab_fail_protected" sequence="1" />
+</triggers>
+
+<aliases>
+  <alias match="^bls$" enabled="y" regexp="y" script="bls_toggle" />
+  <alias match="^bls auto$" enabled="y" regexp="y" script="bls_cmd_auto" />
+  <alias match="^bls all$" enabled="y" regexp="y" script="bls_cmd_all" />
+  <alias match="^bls stop$" enabled="y" regexp="y" script="bls_stop" />
+  <alias match="^bls (help|status|debug)$" enabled="y" regexp="y" script="bls_control" />
+  <alias match="^bls list(?: (?&lt;filter&gt;.*))?$" enabled="y" regexp="y" script="display_list" />
+  <alias match="^bls set (?&lt;id&gt;\d+) (?&lt;key&gt;\w+)$" enabled="y" regexp="y" script="bls_set_keyword" />
+  <alias match="^bls remove (?&lt;id&gt;\d+)$" enabled="y" regexp="y" script="bls_remove_entry" />
+  <alias match="^bls wipe( confirm)?$" enabled="y" regexp="y" script="bls_wipe_handler" />
+</aliases>
+
+<script>
+<![CDATA[
+local sqlite3 = require "sqlite3"
+local db_path = GetInfo(6) .. "BestLittleStabber.db"
+local db = nil
+
+gmcpdata = { char = { status = { state = "3" } }, room = { info = {} } }
+
+plugin_enabled = (GetVariable("enabled") ~= "0")
+debug_mode = (GetVariable("debug_mode") == "1")
+
+local state = {
+    active_command = nil, 
+    waiting_for_hit = false,
+    target_queue = {},
+    target_metadata = {},
+    raw_buffer = "",
+    last_keyword_index = 1,
+    trust_queue = true,
+    last_attempted_keyword = nil
+}
+
+local noise_words = {
+    ["a"]=true, ["an"]=true, ["the"]=true, ["this"]=true, ["that"]=true,
+    ["and"]=true, ["but"]=true, ["or"]=true, ["for"]=true, ["nor"]=true, ["so"]=true, ["yet"]=true,
+    ["in"]=true, ["on"]=true, ["at"]=true, ["to"]=true, ["with"]=true,
+    ["it"]=true, ["is"]=true, ["was"]=true, ["are"]=true, ["be"]=true, ["i"]=true, ["you"]=true, ["he"]=true, ["she"]=true
+}
+
+function OnPluginInstall()
+    init_database()
+    local d_status = debug_mode and "@G[ON]" or "@R[OFF]"
+    AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wV18.7 Loaded. [Help/Status: bls help | bls status | Debug: " .. d_status .. "@w]"))
+end
+
+function init_database()
+    db = sqlite3.open(db_path)
+    if not db then return end
+    db:exec([[CREATE TABLE IF NOT EXISTS mob_keywords (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+        mob_key TEXT UNIQUE, 
+        long_name TEXT, 
+        keyword TEXT, 
+        area TEXT, 
+        short_name TEXT, 
+        ignored INTEGER DEFAULT 0, 
+        manual_required INTEGER DEFAULT 0, 
+        fail_count INTEGER DEFAULT 0, 
+        UNIQUE(long_name, area)
+    );]])
+    debug_log("Database", "SQLite initialized at " .. db_path)
+end
+
+function debug_log(cat, msg)
+    if debug_mode then 
+        local prefix = "@x196[@x242BLS Debug@x196] @x051" .. string.format("%-10s", cat) .. " @w: "
+        AnsiNote(ColoursToAnsi(prefix .. msg))
+    end
+end
+
+function OnPluginBroadcast(msg, id, name, text)
+    if (id == '3e7dedbe37e44942dd46d264') then
+        local old_state = gmcpdata.char.status.state
+        local res, gmcparg = CallPlugin(id, "gmcpval", "room")
+        if res == 0 then loadstring("gmcpdata.room = " .. gmcparg)() end
+        res, gmcparg = CallPlugin(id, "gmcpval", "char")
+        if res == 0 then loadstring("gmcpdata.char = " .. gmcparg)() end
+
+        if state.active_command == "auto" and old_state ~= "3" and gmcpdata.char.status.state == "3" then
+            debug_log("Sequence", "Combat resolved. Looking for next target...")
+            Send("look")
+        end
+    end
+end
+
+function bls_toggle()
+    plugin_enabled = not plugin_enabled
+    SetVariable("enabled", plugin_enabled and "1" or "0")
+    local status = plugin_enabled and "@GEnabled" or "@REnabled"
+    AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wMaster Power: " .. status))
+end
+
+function bls_cmd_auto()
+    if not plugin_enabled then return end
+    state.active_command = "auto"
+    debug_log("Sequence", "Auto-Discovery mode engaged.")
+    Send("look")
+end
+
+function bls_cmd_all()
+    if not plugin_enabled then return end
+    state.active_command = "all"
+    debug_log("Sequence", "Swarm mode engaged.")
+    Send("look")
+end
+
+function bls_stop()
+    state.active_command = nil
+    state.waiting_for_hit = false
+    debug_log("Sequence", "@RALL SEQUENCES HALTED.")
+end
+
+function room_start()
+    debug_log("Capture", "Room capture started.")
+    state.target_queue, state.target_metadata, state.raw_buffer, state.trust_queue = {}, {}, "", true
+    EnableTriggerGroup("room_capture", true)
+end
+
+function process_mob_line(name, line, wildcards)
+    local text = wildcards[1]
+    if text:find("%(Player%)") or text:find("%(Charmed%)") or text:find("is fighting") then 
+        debug_log("Capture", "Ignoring player/combatant: " .. text)
+        return 
+    end
+    if text:match("^%s*%(") or text:match("^%s*[A-Z]") then
+        if state.raw_buffer ~= "" then handle_captured_mob(trim(state.raw_buffer:gsub("%b()", ""))) end
+        state.raw_buffer = text
+    else 
+        state.raw_buffer = state.raw_buffer .. " " .. trim(text) 
+    end
+    if text:match("%.%s*$") then 
+        handle_captured_mob(trim(state.raw_buffer:gsub("%b()", "")))
+        state.raw_buffer = "" 
+    end
+end
+
+function handle_captured_mob(mob_long)
+    if mob_long == "" then return end
+    local area = gmcpdata.room.info.zone or "Global"
+    local keyword, ignored, manual, fails = "", 0, 0, 0
+    local stmt = db:prepare("SELECT keyword, ignored, manual_required, fail_count FROM mob_keywords WHERE long_name = ? AND area = ?")
+    if stmt then
+        stmt:bind_values(mob_long, area)
+        if stmt:step() == sqlite3.ROW then
+            local row = stmt:get_values()
+            keyword, ignored, manual, fails = row[1] or "", row[2] or 0, row[3] or 0, row[4] or 0
+        else
+            db:exec(string.format("INSERT INTO mob_keywords (long_name, area) VALUES (%s, %s)", fixsql(mob_long), fixsql(area)))
+        end
+        stmt:finalize()
+    end
+
+    if ignored == 1 then
+        debug_log("Capture", "Skipping blacklisted: " .. mob_long)
+        return 
+    end
+    
+    table.insert(state.target_queue, mob_long)
+    table.insert(state.target_metadata, { trusted = (keyword ~= ""), keyword = keyword, fails = fails })
+    
+    if keyword == "" then 
+        state.trust_queue = false 
+        debug_log("Capture", "[@x226LEARN@w] " .. mob_long)
+    else
+        debug_log("Capture", "[@GKNOWN@w] " .. mob_long)
+    end
+end
+
+function room_end_trigger()
+    EnableTriggerGroup("room_capture", false)
+    if state.raw_buffer ~= "" then handle_captured_mob(trim(state.raw_buffer:gsub("%b()", ""))) end
+    debug_log("Capture", "Room scan finished. Targets: " .. #state.target_queue)
+    
+    if state.active_command then
+        if state.active_command == "all" and not state.trust_queue then
+            debug_log("Sequence", "Untrusted targets. Falling back to Auto.")
+            state.active_command = "auto"
+        end
+        if state.active_command == "all" then bls_execute_swarm() else bls_execute_next() end
+    end
+end
+
+function bls_execute_swarm()
+    debug_log("Action", "Room trusted. Executing Swarm.")
+    local counts = {}
+    for i, meta in ipairs(state.target_metadata) do
+        counts[meta.keyword] = (counts[meta.keyword] or 0) + 1
+        Send("backstab " .. (counts[meta.keyword] > 1 and counts[meta.keyword] .. "." or "") .. meta.keyword)
+    end
+    state.active_command = nil
+end
+
+function bls_execute_next()
+    if #state.target_queue == 0 or state.waiting_for_hit then return end
+
+    local mob_long = state.target_queue[1]
+    local meta = state.target_metadata[1]
+    local keyword = meta.keyword
+
+    if keyword == "" then
+        local words = {}
+        for w in mob_long:gmatch("%S+") do
+            local clean = w:gsub("^%p+", ""):gsub("%p+$", ""):gsub("'s$", ""):lower()
+            if not noise_words[clean] and clean ~= "" then table.insert(words, clean) end 
+        end
+        if #words == 0 or state.last_keyword_index > #words then
+            db:exec(string.format("UPDATE mob_keywords SET manual_required = 1 WHERE long_name = %s AND area = %s", fixsql(mob_long), fixsql(gmcpdata.room.info.zone or "Global")))
+            debug_log("Database", "Manual required for: " .. mob_long)
+            table.remove(state.target_queue, 1); table.remove(state.target_metadata, 1); state.last_keyword_index = 1
+            bls_execute_next(); return
+        end
+        keyword = words[#words - (state.last_keyword_index - 1)]
+        debug_log("Discovery", "Testing [@x226" .. keyword .. "@w] " .. mob_long)
+    end
+    
+    state.waiting_for_hit, state.last_attempted_keyword = true, keyword
+    Send("backstab " .. keyword)
+end
+
+function backstab_success(name, line, wildcards)
+    if not state.waiting_for_hit then return end
+    debug_log("Event", "Backstab connected!")
+    local mob_long = table.remove(state.target_queue, 1)
+    local meta = table.remove(state.target_metadata, 1)
+    
+    if mob_long and state.last_attempted_keyword and meta and not meta.trusted then
+        db:exec(string.format("UPDATE mob_keywords SET keyword = %s, manual_required = 0, fail_count = 0 WHERE long_name = %s AND area = %s", 
+            fixsql(state.last_attempted_keyword), fixsql(mob_long), fixsql(gmcpdata.room.info.zone or "Global")))
+        debug_log("Database", "LEARNED [@x226" .. state.last_attempted_keyword .. "@w] for " .. mob_long)
+    end
+    state.last_keyword_index, state.waiting_for_hit = 1, false
+end
+
+function backstab_fail_missing()
+    if not state.waiting_for_hit then return end
+    debug_log("Event", "Target not found.")
+    state.waiting_for_hit = false
+    local meta = state.target_metadata[1]
+    if meta and meta.trusted then
+        table.remove(state.target_queue, 1); table.remove(state.target_metadata, 1); state.last_keyword_index = 1
+    else 
+        state.last_keyword_index = state.last_keyword_index + 1
+    end
+    bls_execute_next()
+end
+
+function backstab_fail_protected()
+    if not state.waiting_for_hit then return end
+    debug_log("Event", "Divine Protection.")
+    state.waiting_for_hit = false
+    local mob_long = table.remove(state.target_queue, 1)
+    table.remove(state.target_metadata, 1)
+    if mob_long then 
+        db:exec(string.format("UPDATE mob_keywords SET ignored = 1 WHERE long_name = %s AND area = %s", fixsql(mob_long), fixsql(gmcpdata.room.info.zone or "Global"))) 
+        debug_log("Database", "BLACKLISTED: " .. mob_long)
+    end
+    bls_execute_next()
+end
+
+function bls_set_keyword(name, line, wildcards)
+    db:exec(string.format("UPDATE mob_keywords SET keyword = %s, manual_required = 0 WHERE id = %s", fixsql(wildcards.key), wildcards.id))
+    debug_log("Database", "Manual override: Record " .. wildcards.id .. " set to " .. wildcards.key)
+end
+
+function bls_remove_entry(name, line, wildcards)
+    db:exec("DELETE FROM mob_keywords WHERE id = " .. wildcards.id)
+    debug_log("Database", "Record " .. wildcards.id .. " removed.")
+end
+
+function bls_wipe_handler(name, line, wildcards)
+    if wildcards[1] == " confirm" then 
+        db:exec("DELETE FROM mob_keywords; DELETE FROM sqlite_sequence WHERE name='mob_keywords';")
+        debug_log("Database", "@RALL DATA PURGED.")
+    else
+        AnsiNote(ColoursToAnsi("@Y[BLS] Type 'bls wipe confirm' to reset all data."))
+    end
+end
+
+function bls_control(name, line, wildcards)
+    local cmd = wildcards[1]
+    if cmd == "debug" then 
+        debug_mode = not debug_mode
+        SetVariable("debug_mode", debug_mode and "1" or "0")
+        local status = debug_mode and "@GEnabled" or "@REnabled"
+        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wDebug: " .. status))
+    elseif cmd == "status" then display_status()
+    elseif cmd == "help" then display_help() end
+end
+
+function display_list(name, line, wildcards)
+    local filter = wildcards.filter
+    local query = "SELECT * FROM mob_keywords"
+    if filter and filter ~= "" then query = query .. " WHERE (keyword LIKE " .. fixsql("%" .. filter .. "%") .. " OR long_name LIKE " .. fixsql("%" .. filter .. "%") .. ")" end
+    query = query .. " ORDER BY id DESC LIMIT 20"
+    AnsiNote(ColoursToAnsi("@x051ID    | ST | Fails | Keyword         | Long Name"))
+    for row in db:nrows(query) do
+        local sym = row.ignored == 1 and "@R[I]" or (row.manual_required == 1 and "@Y[M]" or ((row.keyword or "") == "" and "@C[L]" or "@G[K]"))
+        AnsiNote(ColoursToAnsi(string.format("@Y%-6s @w| %s @w| @R%-5s @w| @x226%-15s @w| @w%s", tostring(row.id), sym, tostring(row.fail_count or 0), tostring(row.keyword or ""), tostring(row.long_name or ""))))
+    end
+end
+
+function display_status()
+    AnsiNote(ColoursToAnsi("@x051--- [ @x242BLS Status @x051] ---"))
+    AnsiNote(ColoursToAnsi("@wPower: " .. (plugin_enabled and "@GOn" or "@ROff") .. " @w| Debug: " .. (debug_mode and "@GOn" or "@ROff")))
+    AnsiNote(ColoursToAnsi("@wCurrent Mode: @x226" .. (state.active_command or "Idle")))
+end
+
+function display_help()
+    AnsiNote(ColoursToAnsi("@x051--- [ @x242BLS Help @x051] ---"))
+    AnsiNote(ColoursToAnsi("@x226bls auto      @w: Start discovery loop."))
+    AnsiNote(ColoursToAnsi("@x226bls all       @w: Stab known targets."))
+    AnsiNote(ColoursToAnsi("@x226bls list      @w: View database."))
+    AnsiNote(ColoursToAnsi("@x226bls set # key @w: Manually fix keyword."))
+    AnsiNote(ColoursToAnsi("@x226bls remove #  @w: Delete entry."))
+    AnsiNote(ColoursToAnsi("@x226bls wipe      @w: Purge database."))
+end
+
+function fixsql(s) return "'" .. (tostring(s):gsub("'", "''")) .. "'" end
+function trim(s) return s:match("^%s*(.-)%s*$") or "" end
+
+function ColoursToAnsi(str)
+    local codes = {
+        ["@R"] = "\27[1;31m", ["@G"] = "\27[1;32m", ["@Y"] = "\27[1;33m",
+        ["@B"] = "\27[1;34m", ["@M"] = "\27[1;35m", ["@C"] = "\27[1;36m",
+        ["@W"] = "\27[1;37m", ["@w"] = "\27[0;37m", ["@D"] = "\27[1;30m",
+    }
+    str = str:gsub("(@[RG YBM CW wD])", function(match) return codes[match] or match end)
+    str = str:gsub("@x(%d%d%d)", function(match) return "\27[38;5;" .. tonumber(match) .. "m" end)
+    return str .. "\27[0m"
+end
+]]>
+</script>
+</muclient>
