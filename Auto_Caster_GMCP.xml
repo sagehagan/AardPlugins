@@ -440,6 +440,12 @@
         end
     end
 
+    --- Exposes the raw Opener string to other plugins
+    -- @return The string command currently saved in configuration
+    function GetOpenerCommand()
+        return Caster.cfg.opener or ""
+    end
+
     Caster.update_subclass()
     Caster.log("@YAuto Caster Ready @DUse @Ccaster help @Dand @Ccaster status @Dfor more info.", "lime")
     ]]>

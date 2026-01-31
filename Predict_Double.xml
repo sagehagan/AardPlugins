@@ -10,7 +10,7 @@
    purpose="Show Me The Pups"
    date_written="2024-05-20"
    requires="4.00"
-   version="5.1"
+   version="5.6"
    >
 <description trim="y">
 <![CDATA[
@@ -68,8 +68,8 @@ Use 'pd <channel>' to guess when the next million mob double will occur.
     end
     
     EnableTriggerGroup("pd_triggers", true)
-    Execute("gamestat 5")
-    Execute("realtime")
+    Send("gamestat 5")
+    Send("realtime")
   </send>
   </alias>
 </aliases>
@@ -94,6 +94,7 @@ end
 function OnMobDeaths(name, line, wildcards)
     stats.since_reboot = tonumber((wildcards[1]:gsub(",", "")))
     local since_added = tonumber((wildcards[2]:gsub(",", "")))
+    -- Global milestone logic
     stats.needed = 1000000 - (since_added % 1000000)
 end
 
@@ -104,6 +105,9 @@ end
 function OnSystemTime(name, line, wildcards)
     local sys_ts = get_mud_time(wildcards[1], wildcards[2], wildcards[3], wildcards[4], wildcards[5], wildcards[6])
 
+    -- Check for nil reboot time to prevent crash
+    if not stats.reboot_ts then return end
+
     local diff_mins = math.max(1, (sys_ts - stats.reboot_ts) / 60)
     local kpm = math.floor(stats.since_reboot / diff_mins)
     
@@ -112,14 +116,12 @@ function OnSystemTime(name, line, wildcards)
     local hours = math.floor((total_mins_left % 1440) / 60)
     local mins = total_mins_left % 60
 
-    -- Calculate Local Time Conversion
-    -- Uses current local system time + estimated minutes remaining
+    -- Stable Local Time Conversion
     local local_eta_ts = os.time() + (total_mins_left * 60)
     local local_eta_str = os.date("%d %b %I:%M%p", local_eta_ts)
 
-    -- Updated Output: Added Local Time Conversion at the end
     local output = string.format(
-        "@R[@DPredict Double@R] @DMob Deaths: @w%s @R| @DAvg KPM: @w%d @R| @DETA: @Y%dd %dh %dm @R| @DLocal: @w%s",
+        "@R[@DPredict Double@R] @DMobs: @w%s @R| @DAvg KPM: @w%d @R| @DETA: @Y%dd %dh %dm @R| @DLocal: @w%s",
         comma_value(stats.needed), kpm, days, hours, mins, local_eta_str
     )
 
@@ -141,13 +143,8 @@ function trim(s) return s:match("^%s*(.-)%s*$") end
 
 function ColoursToANSI(str)
     local aard_to_ansi = {
-        ["@R"] = ANSI(31, 1), 
-        ["@G"] = ANSI(32, 1),
-        ["@Y"] = ANSI(33, 1), 
-        ["@C"] = ANSI(36, 1), 
-        ["@W"] = ANSI(37, 1),
-        ["@D"] = ANSI(34, 1), 
-        ["@w"] = ANSI(37, 0),
+        ["@R"] = ANSI(31, 1), ["@G"] = ANSI(32, 1), ["@Y"] = ANSI(33, 1), 
+        ["@C"] = ANSI(36, 1), ["@W"] = ANSI(37, 1), ["@D"] = ANSI(34, 1), ["@w"] = ANSI(37, 0),
     }
     return (str:gsub("(@[RGYCWDw])", aard_to_ansi))
 end

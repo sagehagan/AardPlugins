@@ -9,7 +9,7 @@
    purpose="Automatic Spellup Maintenance"
    save_state="y"
    date_written="2026-01-29"
-   version="12.4"
+   version="14.5"
    >
 </plugin>
 
@@ -44,6 +44,7 @@
   <alias match="^hs combat$" enabled="y" regexp="y" script="ListCombatEligible" />
   <alias match="^hs combat add (?P<target>.+)$" enabled="y" regexp="y" script="AddCombatFlag" />
   <alias match="^hs combat remove (?P<target>.+)$" enabled="y" regexp="y" script="RemoveCombatFlag" />
+  <alias match="^hs clansn (?P<sn>\d+)$" enabled="y" regexp="y" script="SetClanSN" />
   <alias match="^hs clear$" enabled="y" regexp="y" script="ClearFlags" />
   <alias match="^hs reset$" enabled="y" regexp="y" script="HardReset" />
   
@@ -58,7 +59,7 @@ require "json"
 local active, debug, quiet, char_state = true, false, false, 3
 local last_sent_sn = nil
 local spell_registry = {} 
-local eq_config = { aura_id = "none", aura_name = "none", float_id = "none", float_name = "none", current_worn = "" }
+local eq_config = { aura_id = "none", aura_name = "none", float_id = "none", float_name = "none", current_worn = "", clan_sn = "none" }
 local sync_stats = {added = 0, purged = 0}
 local skill_exceptions = { ["pass without trace"] = "trace", ["quickstab"] = "quickstab" }
 
@@ -78,42 +79,43 @@ end
 function OnPluginInstall()
     LoadData()
     UpdateState()
-    ThemePrint("@R[@DHeracles Spellup@R] @DVersion 12.4 Loaded. Dynamic Help & Proper Casing Active.")
+    ThemePrint("@R[@DHeracles Spellup@R] @DVersion 14.5. First-time instructions added to help.")
 end
 
 -------------------------------------------------------------------------------
--- Equipment Fail-safe Engine
+-- Equipment & Clan Config
 -------------------------------------------------------------------------------
+
+function SetClanSN(name, line, wildcards)
+    eq_config.clan_sn = wildcards.sn
+    SaveData()
+    ThemePrint(string.format("@R[@DHS Config@R] @WClan Skill SN set to: @C%s", eq_config.clan_sn))
+end
 
 function SetAura(name, line, wildcards)
     eq_config.aura_id = wildcards.id
-    eq_config.aura_name = wildcards.name -- Maintain casing for display
+    eq_config.aura_name = wildcards.name
     SaveData()
     ThemePrint(string.format("@R[@DHS Config@R] @WAura Set: @D%s @R(@W%s@R)", eq_config.aura_name, eq_config.aura_id))
 end
 
 function SetFloat(name, line, wildcards)
     eq_config.float_id = wildcards.id
-    eq_config.float_name = wildcards.name -- Maintain casing for display
+    eq_config.float_name = wildcards.name
     SaveData()
     ThemePrint(string.format("@R[@DHS Config@R] @WFloat Set: @D%s @R(@W%s@R)", eq_config.float_name, eq_config.float_id))
 end
 
 function OnItemWear(name, line, wildcards)
-    -- We compare internally with lowercase, but can capture with casing
     eq_config.current_worn = wildcards[1] 
     RobustDebug("Item", eq_config.current_worn, "EQUIP", "Tracked current floating item.")
 end
 
 function CheckAuraFailSafe()
-    -- Logic comparison uses lowercase
-    if eq_config.aura_id:lower() == "none" then 
-        return 
-    end
+    if eq_config.aura_id:lower() == "none" then return end
     
     local sanc_sn = FindSpell("sanctuary")
     if sanc_sn and spell_registry[sanc_sn].needs_recast then
-        -- Check if current worn (lowercase) matches aura name (lowercase)
         if eq_config.current_worn:lower() ~= eq_config.aura_name:lower() then
             RobustDebug("Fail-safe", "Sanctuary", "WEAR", "Combat detected without Sanc. Equipping Aura.")
             Execute("wear " .. eq_config.aura_id)
@@ -125,13 +127,21 @@ end
 -- Sync & Capture System
 -------------------------------------------------------------------------------
 
-function StartSpellCapture()
+function HandleHsList()
     sync_stats = {added = 0, purged = 0}
     EnableTriggerGroup("HS_Spell_Capture", true)
+    Send("slist")
+end
+
+function StartSpellCapture()
+    -- This fires on {spellheaders}
 end
 
 function StopSpellCapture()
     EnableTriggerGroup("HS_Spell_Capture", false)
+    SaveData()
+    ThemePrint(string.format("@R[@DHeracles Spellup@R] @WSync Summary: @G%d @Dregistered, @R%d @Dpurged.", sync_stats.added, sync_stats.purged))
+    ShowStatus()
 end
 
 function StartRecoveryGag()
@@ -140,27 +150,25 @@ end
 
 function StopRecoveryGag()
     EnableTriggerGroup("HS_Recovery_Gag", false)
-    SaveData()
-    ThemePrint(string.format("@R[@DHeracles Spellup@R] @WSync Summary: @G%d @Dregistered, @R%d @Dpurged.", sync_stats.added, sync_stats.purged))
-    ShowStatus()
 end
 
 function CaptureSpellLine(name, line, wildcards)
     local sn = wildcards.sn
     local t = tonumber(wildcards.target)
     
-    if t == 2 or t == 3 then
+    -- Register Target 2 (Spellup), Target 3 (Self), or ClanSN
+    if (t == 2 or t == 3) or sn == eq_config.clan_sn then
         local exist = spell_registry[sn] or {}
         spell_registry[sn] = {
             sn = sn, 
-            name = wildcards.name, -- Proper casing preserved
+            name = wildcards.name, 
             static_rec = (tonumber(wildcards.rec) ~= -1) and wildcards.rec or nil,
             type = tonumber(wildcards.type), 
-            needs_recast = exist.needs_recast or false,
+            needs_recast = (tonumber(wildcards.dur) == 0) and (exist.needs_recast or false) or false,
             non_combat = (exist.non_combat ~= nil) and exist.non_combat or true,
             verified_combat = (exist.verified_combat ~= nil) and exist.verified_combat or false,
             ignore = (exist.ignore ~= nil) and exist.ignore or false,
-            is_active = exist.is_active or false,
+            is_active = (tonumber(wildcards.dur) > 0),
             recovery_lock = false
         }
         sync_stats.added = sync_stats.added + 1
@@ -202,7 +210,13 @@ function AttemptCast(sn, hook)
     
     local cmd = (d.type == 1) and ("cast " .. sn) or (skill_exceptions[d.name:lower()] or d.name:match("%S+"))
     last_sent_sn = sn
-    if quiet then SendNoEcho(cmd) else Send(cmd) end
+    if quiet then 
+        RobustDebug(hook, d.name, "CAST", "Gagged outgoing command.")
+        SendNoEcho(cmd) 
+    else 
+        RobustDebug(hook, d.name, "CAST", "Sending command.")
+        Send(cmd) 
+    end
 end
 
 function OnAffOn(name, line, wildcards)
@@ -226,16 +240,16 @@ function OnAffOff(name, line, wildcards)
     local d = spell_registry[sn]
     if d then 
         d.needs_recast, d.is_active = true, false
+        RobustDebug("AffOff", d.name, "MISSING", "Spell/Skill expired.")
         
-        -- Handle Sanc Drop in Combat
         if d.name:lower() == "sanctuary" and char_state == 8 then
             CheckAuraFailSafe()
         end
 
-        if d.static_rec then 
-            d.recovery_lock = true 
-        else 
+        if sn == eq_config.clan_sn or not d.static_rec then 
             AttemptCast(sn, "AffOff") 
+        else 
+            d.recovery_lock = true 
         end 
     end
 end
@@ -248,6 +262,10 @@ function OnSFail(name, line, wildcards)
     if reason == 3 then 
         d.current_rec = wildcards[4]
         d.recovery_lock = true
+        RobustDebug("SFail", d.name, "REC_ON", "Recovery timer started.")
+    elseif reason == 8 then
+        d.needs_recast = false
+        RobustDebug("SFail", d.name, "ABORT", "Reason 8: Access denied or conflict. Skipping recast.")
     elseif reason == 6 then 
         if not d.verified_combat then
             d.non_combat = true
@@ -255,13 +273,25 @@ function OnSFail(name, line, wildcards)
             SaveData()
         end
         d.needs_recast = true 
+        RobustDebug("SFail", d.name, "RECAST", "Failed due to combat; flagged for standing.")
     elseif reason == 2 then 
-        d.needs_recast = false 
+        if d.name:lower() == "sanctuary" and eq_config.current_worn:lower() == eq_config.aura_name:lower() then
+             if eq_config.float_id:lower() ~= "none" then
+                 RobustDebug("SFail", d.name, "SWAP", "Sanc already on via Aura. Swapping to float.")
+                 Execute("wear " .. eq_config.float_id)
+                 d.needs_recast = true
+                 AttemptCast(sn, "SFail_Recovery")
+             end
+        else
+            d.needs_recast = false 
+            d.is_active = true
+            RobustDebug("SFail", d.name, "SKIP", "Already active.")
+        end
     end
 end
 
 -------------------------------------------------------------------------------
--- State Management & State Transitions
+-- State Management
 -------------------------------------------------------------------------------
 
 function UpdateState()
@@ -274,14 +304,11 @@ function UpdateState()
                 local old_state = char_state
                 char_state = ns
                 
-                -- ENTERING COMBAT FAIL-SAFE
                 if char_state == 8 then
                     CheckAuraFailSafe()
                 end
 
-                -- EXITING COMBAT RECOVERY
                 if char_state == 3 and old_state == 8 then
-                    -- Swap back to float item if we were wearing aura (comparing lowercase)
                     if eq_config.float_id:lower() ~= "none" and eq_config.current_worn:lower() == eq_config.aura_name:lower() then
                         Execute("wear " .. eq_config.float_id)
                     end
@@ -308,18 +335,20 @@ end
 function ShowHelp()
     Note("")
     ThemePrint("@R[@DHeracles Spellup: @WHelp Guide@R]")
+    ThemePrint("@GFirst Time Users: @DSet your clan skill with @Whs clansn <sn> @Dthen run @Whs list @Dtopopulate your registry.")
     ThemePrint("@D--------------------------------------------------")
     ThemePrint("@R[@Whs@R]             @DToggle plugin ON/OFF")
     ThemePrint("@R[@Whs quiet@R]       @DToggle gagging of outgoing commands")
-    ThemePrint("@R[@Whs list@R]        @DRefresh spells from slist")
+    ThemePrint("@R[@Whs list@R]        @DRefresh (Target 2/3 + ClanSN)")
     ThemePrint("@R[@Whs help@R]        @DShow this help menu")
     ThemePrint("@R[@Whs debug@R]       @DToggle detailed casting info")
     ThemePrint("@R[@Whs clear@R]       @DReset discovery list and test all")
     ThemePrint("@R[@Whs reset@R]       @DFull database wipe")
     
     Note("")
-    ThemePrint("@YEquipment Management (@WSet to 'none' to disable@Y)")
+    ThemePrint("@YEquipment & Clan Management (@WSet to 'none' to disable@Y)")
     ThemePrint("@D--------------------------------------------------")
+    ThemePrint(string.format("@R[@Whs clansn <sn>@R]     @DWhitelisted: @C%s", eq_config.clan_sn))
     ThemePrint(string.format("@R[@Whs aura <id> <name>@R]  @DCurrent: @W%s @R(@W%s@R)", eq_config.aura_name, eq_config.aura_id))
     ThemePrint(string.format("@R[@Whs float <id> <name>@R] @DCurrent: @W%s @R(@W%s@R)", eq_config.float_name, eq_config.float_id))
 
@@ -380,7 +409,6 @@ function RemoveCombatFlag(name, line, wildcards)
     end
 end
 
-function HandleHsList() Send("slist") end
 function ToggleQuiet() quiet = not quiet; SaveData(); ThemePrint(string.format("@R[@DHeracles: @WQuiet@R] @R[@DMode: @W%s@R]", quiet and "Enabled" or "Disabled")) end
 function ToggleHS() active = not active; ThemePrint(string.format("@R[@DHeracles: @WSpellup@R] @R[@DStatus: @W%s@R]", active and "Enabled" or "Disabled")) end
 function ToggleDebug() debug = not debug; SaveData(); ThemePrint(string.format("@R[@DHeracles: @WDebug @R] @R[@DMode: @W%s@R]", debug and "Enabled" or "Disabled")) end
@@ -391,6 +419,7 @@ function OnRecOff(name, line, wildcards)
         if d.current_rec == rid or d.static_rec == rid then 
             d.current_rec = nil
             d.recovery_lock = false
+            RobustDebug("RecOff", d.name, "READY", "Recovery cleared.")
             if d.needs_recast then AttemptCast(sn, "RecOff") end 
         end 
     end
@@ -438,7 +467,7 @@ end
 
 function HardReset() 
     spell_registry = {}
-    eq_config = { aura_id = "none", aura_name = "none", float_id = "none", float_name = "none", current_worn = "" }
+    eq_config = { aura_id = "none", aura_name = "none", float_id = "none", float_name = "none", current_worn = "", clan_sn = "none" }
     SaveData()
     ThemePrint("@R[@DHeracles: @WReset@R] @DDatabase wiped.") 
 end
