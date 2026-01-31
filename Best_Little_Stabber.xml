@@ -32,6 +32,7 @@
   <alias match="^bls (ignore|unignore) (?&lt;id&gt;\d+)$" enabled="y" regexp="y" script="bls_ignore_toggle" />
   <alias match="^bls remove (?&lt;id&gt;\d+)$" enabled="y" regexp="y" script="bls_remove_entry" />
   <alias match="^bls wipe( confirm)?$" enabled="y" regexp="y" script="bls_wipe_handler" />
+  <alias match="^bls rem (?<area>.*)$" enabled="y" regexp="y" script="bls_remove_area" />
 </aliases>
 
 <script>
@@ -64,13 +65,15 @@ local state = {
     pending_look = false,
     target_queue = {},
     target_metadata = {},
+    database_cache = {},  -- ADD THIS LINE
     raw_buffer = "",
     last_keyword_index = 1,
     trust_queue = true,
     last_attempted_keyword = nil,
     swarm_total = 0,
     swarm_hits = 0,
-    swarm_misses = 0
+    swarm_misses = 0,
+    word_index = 1 -- Tracks which word of the long name we are trying
 }
 
 local noise_words = {
@@ -137,11 +140,38 @@ function bls_control(name, line, wildcards)
     if cmd == "debug" then
         debug_mode = not debug_mode
         SetVariable("debug_mode", debug_mode and "1" or "0")
-        SaveState()
-        local status = debug_mode and "@GEnabled" or "@RDisabled"
-        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wDebug Mode: " .. status))
-    elseif cmd == "status" then display_status()
-    elseif cmd == "help" then display_help()
+        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wDebug: " .. (debug_mode and "@GEnabled" or "@REnabled")))
+    elseif cmd == "status" then
+        display_status()
+elseif cmd == "help" then
+        AnsiNote(ColoursToAnsi("\n@x196[@x242BLS@x196] @wHelp Menu - V22.6"))
+        
+        local function help_line(cmd, desc)
+            AnsiNote(ColoursToAnsi(string.format("@x226  %-18s @x242| @w%s", cmd, desc)))
+        end
+
+        -- Automation Section
+        AnsiNote(ColoursToAnsi("@x242  Automation\n  " .. string.rep("-", 50)))
+        help_line("bls auto", "Attacks all targets one by one looking for keywords")
+        help_line("bls all", "Stabs all targets if keywords known - If not, starts Auto.")
+        help_line("bls stop", "Halt current automation")
+
+        -- Database Section
+        AnsiNote(ColoursToAnsi("\n@x242  Database Management\n  " .. string.rep("-", 50)))
+        help_line("bls list <zone>", "Display mob DB - Zone Filter Optional")
+        help_line("bls set <id> <key>", "Set manual keyword for ID")
+        help_line("bls ignore <id>", "Set ID to Ignored [I]")
+        help_line("bls unignore <id>", "Return ID to active [K/L]")
+        help_line("bls remove <id>", "Delete specific entry by ID")
+        help_line("bls rem <area>", "Delete all entries for an area")
+        help_line("bls wipe confirm", "Clear entire database - No Take Backs")
+
+        -- System Section
+        AnsiNote(ColoursToAnsi("\n@x242  System\n  " .. string.rep("-", 50)))
+        help_line("bls", "Toggle plugin ON/OFF")
+        help_line("bls status", "Show current plugin state")
+        help_line("bls debug", "Toggle debug messaging")
+        AnsiNote("")
     end
 end
 
@@ -204,6 +234,8 @@ function room_start()
     state.raw_buffer = ""
     state.trust_queue = true
     EnableTriggerGroup("room_capture", true)
+    state.room_has_unknown = false
+    state.room_trusted = true
 end
 
 function process_mob_line(name, line, wildcards)
@@ -371,35 +403,39 @@ function backstab_fail_protected(name, line, wildcards)
 end
 
 function display_list(name, line, wildcards)
-    local filter = (wildcards.filter or ""):lower()
-    AnsiNote(ColoursToAnsi("@x051.--------------------------------------------------------------------------------."))
-    AnsiNote(ColoursToAnsi("@x051| @x242 ID  | Keyword    | Long Name                              | Area       | Stat @x051|"))
-    AnsiNote(ColoursToAnsi("@x051|--------------------------------------------------------------------------------|"))
-    
-    if filter == "queue" then
-        for i, mob_long in ipairs(state.target_queue) do
-            local meta = state.target_metadata[i]
-            local id = string.format("%-4s", "Q"..i)
-            local key = string.format("%-10s", meta.keyword ~= "" and meta.keyword or "???")
-            local name = string.format("%-38s", mob_long:sub(1,38))
-            local area = string.format("%-10s", (gmcpdata.room.info.zone or "Global"):sub(1,10))
-            AnsiNote(ColoursToAnsi("@x051| @w" .. id .. " | @Y" .. key .. " @w| " .. name .. " | " .. area .. " | @G[QUE] @x051|"))
-        end
-    else
-        local query = "SELECT id, keyword, long_name, area, ignored FROM mob_keywords"
-        if filter ~= "" then 
-            query = query .. " WHERE long_name LIKE " .. fixsql("%" .. filter .. "%") .. " OR area LIKE " .. fixsql("%" .. filter .. "%") 
-        end
-        for row in db:nrows(query) do
-            local id = string.format("%-4d", row.id)
-            local key = string.format("%-10s", row.keyword or "???")
-            local name = string.format("%-38s", row.long_name:sub(1,38))
-            local area = string.format("%-10s", (row.area or "Global"):sub(1,10))
-            local status = (row.ignored == 1) and "@R[IGN]" or "@G[OK] "
-            AnsiNote(ColoursToAnsi("@x051| @w" .. id .. " | @Y" .. key .. " @w| " .. name .. " | " .. area .. " | " .. status .. " @x051|"))
-        end
+    local filter = wildcards.filter or ""
+    local query = "SELECT * FROM mob_keywords"
+    if filter ~= "" then
+        query = query .. " WHERE long_name LIKE " .. fixsql("%" .. filter .. "%") .. " OR area LIKE " .. fixsql("%" .. filter .. "%")
     end
-    AnsiNote(ColoursToAnsi("@x051'--------------------------------------------------------------------------------'"))
+    -- Sort strictly by ID as requested
+    query = query .. " ORDER BY id ASC"
+
+    AnsiNote(ColoursToAnsi("\n@x196[@x242BLS@x196] @wTarget Database"))
+    
+    -- Headers with internal bars only
+    local header = string.format("@x242  %-4s | %-15s | %-12s | %-3s | %-s", "ID", "Area", "Keyword", "S", "Long Name")
+    AnsiNote(ColoursToAnsi(header))
+    
+    -- Header underline (dashes) - calculating length based on header string
+    AnsiNote(ColoursToAnsi("@x242  " .. string.rep("-", 65)))
+
+    for row in db:nrows(query) do
+        local status = "@x034[K]" -- Known (Green)
+        if row.ignored == 1 then
+            status = "@x160[I]" -- Ignored (Red)
+        elseif row.keyword == "" then
+            status = "@x226[L]" -- Learning (Yellow)
+        end
+
+        local area = (row.area:len() > 15) and (row.area:sub(1,12) .. "...") or row.area
+        -- Rows with internal bars only
+        local line = string.format("@x242  %-4d | @w%-15s @x242| @Y%-12s @x242| %s @x242| @w%s", 
+            row.id, area, (row.keyword == "" and "???" or row.keyword), status, row.long_name)
+        AnsiNote(ColoursToAnsi(line))
+    end
+    
+    AnsiNote(ColoursToAnsi("\n@x242Status: @x034[K]@w=Known @x226[L]@w=Learning @x160[I]@w=Ignore\n"))
 end
 
 function bls_set_keyword(name, line, wildcards)
@@ -430,6 +466,16 @@ end
 
 function fixsql(s) return "'" .. (tostring(s):gsub("'", "''")) .. "'" end
 function trim(s) return s:match("^%s*(.-)%s*$") end
+
+function bls_remove_area(name, line, wildcards)
+    local area = wildcards.area
+    local res = db:exec(string.format("DELETE FROM mob_keywords WHERE area LIKE %s", fixsql("%" .. area .. "%")))
+    if res == sqlite3.OK then
+        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wAll entries for area matching '@Y" .. area .. "@w' have been removed."))
+    else
+        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @RError removing area entries."))
+    end
+end
 
 ]]>
 </script>
