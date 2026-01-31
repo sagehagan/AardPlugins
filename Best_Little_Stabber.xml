@@ -8,7 +8,7 @@
    language="Lua"
    purpose="High-Fidelity Learning Tracker"
    save_state="y"
-   version="21.2"
+   version="22.3"
    >
 </plugin>
 
@@ -29,6 +29,7 @@
   <alias match="^bls (help|status|debug)$" enabled="y" regexp="y" script="bls_control" />
   <alias match="^bls list(?: (?&lt;filter&gt;.*))?$" enabled="y" regexp="y" script="display_list" />
   <alias match="^bls set (?&lt;id&gt;\d+) (?&lt;key&gt;\w+)$" enabled="y" regexp="y" script="bls_set_keyword" />
+  <alias match="^bls (ignore|unignore) (?&lt;id&gt;\d+)$" enabled="y" regexp="y" script="bls_ignore_toggle" />
   <alias match="^bls remove (?&lt;id&gt;\d+)$" enabled="y" regexp="y" script="bls_remove_entry" />
   <alias match="^bls wipe( confirm)?$" enabled="y" regexp="y" script="bls_wipe_handler" />
 </aliases>
@@ -66,7 +67,10 @@ local state = {
     raw_buffer = "",
     last_keyword_index = 1,
     trust_queue = true,
-    last_attempted_keyword = nil
+    last_attempted_keyword = nil,
+    swarm_total = 0,
+    swarm_hits = 0,
+    swarm_misses = 0
 }
 
 local noise_words = {
@@ -78,8 +82,7 @@ local noise_words = {
 
 function OnPluginInstall()
     init_database()
-    local d_status = debug_mode and "@G[ON]" or "@R[OFF]"
-    AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wV21.2 Loaded. [Help/Status: @x226bls help @w| @x226bls status@w]"))
+    AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wV22.3 Loaded. [Help/Status: @x226bls help @w| @x226bls status@w]"))
 end
 
 function init_database()
@@ -98,7 +101,7 @@ end
 function debug_log(cat, msg)
     if debug_mode then 
         local prefix = "@x196[@x242BLS Debug@x196] @x051" .. string.format("%-12s", cat) .. " @w: "
-        AnsiNote(ColoursToAnsi(prefix .. msg))
+        AnsiNote(ColoursToAnsi(prefix .. tostring(msg)))
     end
 end
 
@@ -110,11 +113,19 @@ function OnPluginBroadcast(msg, id, name, text)
         local res_c, gmcparg_c = CallPlugin(id, "gmcpval", "char")
         if res_c == 0 then 
             loadstring("gmcpdata.char = " .. gmcparg_c)()
-            debug_log("GMCP State", "Current State: " .. tostring(gmcpdata.char.status.state))
         end
 
-        if state.pending_look and tostring(gmcpdata.char.status.state) == "3" then
-            debug_log("Action", "State 3 reached. Executing Look.")
+        local current_state = tostring(gmcpdata.char.status.state)
+
+        if current_state == "3" and state.swarm_total > 0 then
+            if (state.swarm_hits + state.swarm_misses) >= state.swarm_total then
+                debug_log("Swarm", "@GQueue Cleared! @wTotal: " .. state.swarm_total)
+                BroadcastPlugin(100, "ROOM_CLEAR")
+                state.swarm_total, state.swarm_hits, state.swarm_misses = 0, 0, 0
+            end
+        end
+
+        if state.pending_look and current_state == "3" then
             state.pending_look = false
             Send("look")
         end
@@ -148,12 +159,14 @@ function display_help()
     AnsiNote(ColoursToAnsi("@x051.--------------------------------------."))
     AnsiNote(ColoursToAnsi("@x051| @x242          BLS Help Menu             @x051|"))
     AnsiNote(ColoursToAnsi("@x051|--------------------------------------|"))
-    AnsiNote(ColoursToAnsi("@x051| @x226bls auto      @w: Start discovery loop   @x051|"))
-    AnsiNote(ColoursToAnsi("@x051| @x226bls all       @w: Stab known targets     @x051|"))
-    AnsiNote(ColoursToAnsi("@x051| @x226bls list      @w: View database          @x051|"))
-    AnsiNote(ColoursToAnsi("@x051| @x226bls set # key @w: Manually fix keyword   @x051|"))
-    AnsiNote(ColoursToAnsi("@x051| @x226bls stop      @w: Halt all sequences     @x051|"))
-    AnsiNote(ColoursToAnsi("@x051| @x226bls debug     @w: Toggle debug mode      @x051|"))
+    AnsiNote(ColoursToAnsi("@x051| @x226bls auto        @w: Start discovery loop @x051|"))
+    AnsiNote(ColoursToAnsi("@x051| @x226bls all         @w: Stab known targets   @x051|"))
+    AnsiNote(ColoursToAnsi("@x051| @x226bls list <arg>  @w: Filter by Name/Area  @x051|"))
+    AnsiNote(ColoursToAnsi("@x051| @x226bls list queue  @w: Show current room targets @x051|"))
+    AnsiNote(ColoursToAnsi("@x051| @x226bls set # key   @w: Fix keyword          @x051|"))
+    AnsiNote(ColoursToAnsi("@x051| @x226bls ignore #    @w: Hide mob from queue  @x051|"))
+    AnsiNote(ColoursToAnsi("@x051| @x226bls stop        @w: Halt all sequences   @x051|"))
+    AnsiNote(ColoursToAnsi("@x051| @x226bls debug       @w: Toggle debug mode    @x051|"))
     AnsiNote(ColoursToAnsi("@x051'--------------------------------------'"))
 end
 
@@ -168,14 +181,12 @@ end
 function bls_cmd_auto()
     if not plugin_enabled then return end
     state.active_command = "auto"
-    debug_log("Action", "Starting AUTO discovery.")
     Send("look")
 end
 
 function bls_all_handler()
     if not plugin_enabled then return end
     state.active_command = "all"
-    debug_log("Action", "Starting ALL swarm.")
     Send("look")
 end
 
@@ -183,11 +194,15 @@ function bls_stop()
     state.active_command = nil
     state.waiting_for_hit = false
     state.pending_look = false
+    state.swarm_total, state.swarm_hits, state.swarm_misses = 0, 0, 0
     debug_log("Sequence", "@RSTOPPED.")
 end
 
 function room_start()
-    state.target_queue, state.target_metadata, state.raw_buffer, state.trust_queue = {}, {}, "", true
+    state.target_queue = {}
+    state.target_metadata = {}
+    state.raw_buffer = ""
+    state.trust_queue = true
     EnableTriggerGroup("room_capture", true)
 end
 
@@ -196,20 +211,22 @@ function process_mob_line(name, line, wildcards)
     if text:find("%(Player%)") or text:find("%(Charmed%)") or text:find("is fighting") then return end
 
     if text:match("^%s*%(") or text:match("^%s*[A-Z]") then
-        if state.raw_buffer ~= "" then handle_captured_mob(trim(state.raw_buffer:gsub("%b()", ""))) end
+        if state.raw_buffer ~= "" then handle_captured_mob(trim(state.raw_buffer)) end
         state.raw_buffer = text
     else 
         state.raw_buffer = state.raw_buffer .. " " .. trim(text) 
     end
 
-    if text:match("%.%s*$") then 
-        handle_captured_mob(trim(state.raw_buffer:gsub("%b()", "")))
+    if text:match("[%.;!]%s*$") then 
+        handle_captured_mob(trim(state.raw_buffer))
         state.raw_buffer = "" 
     end
 end
 
-function handle_captured_mob(mob_long)
-    if mob_long == "" then return end
+function handle_captured_mob(mob_raw)
+    local mob_long = trim(mob_raw:gsub("%b()", ""))
+    if mob_long == "" or mob_long:len() < 3 then return end
+    
     local area = gmcpdata.room.info.zone or "Global"
     local keyword, ignored, exists = "", 0, false
     
@@ -226,14 +243,11 @@ function handle_captured_mob(mob_long)
         stmt:finalize()
     end
 
-    -- Logical Display: Known only if keyword exists, Learning if record exists but no keyword, Unknown if brand new
     local status_label = "@rUnknown"
-    if exists then
-        status_label = (keyword ~= "") and "@GKnown  " or "@YLearning"
-    end
+    if exists then status_label = (keyword ~= "") and "@GKnown  " or "@YLearning" end
     if ignored == 1 then status_label = "@RIgnored " end
 
-    debug_log("Target", string.format("%s | Key: @x226%-10s @w| %-30s", status_label, (keyword ~= "" and keyword or "???"), mob_long:sub(1,30)))
+    debug_log("Target", string.format("%s | Key: @x226%-10s @w| %s", status_label, (keyword ~= "" and keyword or "???"), mob_long))
 
     if ignored == 1 then return end
     table.insert(state.target_queue, mob_long)
@@ -243,11 +257,26 @@ end
 
 function room_end_trigger()
     EnableTriggerGroup("room_capture", false)
-    if not plugin_enabled or not state.active_command then return end
-    if state.raw_buffer ~= "" then handle_captured_mob(trim(state.raw_buffer:gsub("%b()", ""))) end
     
+    if state.raw_buffer ~= "" then 
+        handle_captured_mob(trim(state.raw_buffer)) 
+        state.raw_buffer = ""
+    end
+    
+    local final_count = #state.target_queue
+    local trust_status = (final_count > 0) and (state.trust_queue and "@G[TRUSTED]" or "@Y[UNTRUSTED]") or "@R[EMPTY]"
+
+    local debug_string = "@wTotal: @Y" .. tostring(final_count) .. " @wtargets. Room Status: " .. trust_status
+    debug_log("Queue", debug_string)
+
+    if not plugin_enabled or not state.active_command then return end
+    if final_count == 0 then
+        state.active_command = nil
+        return
+    end
+
     if state.active_command == "all" and not state.trust_queue then
-        debug_log("Action", "@RQueue untrusted (Unknown/Learning found). Falling back to AUTO.")
+        debug_log("Action", "@RQueue untrusted. Falling back to AUTO.")
         state.active_command = "auto"
     end
     
@@ -258,12 +287,21 @@ end
 function bls_execute_swarm()
     local counts = {}
     local commands = {}
+    state.swarm_hits, state.swarm_misses = 0, 0
+    
     for _, meta in ipairs(state.target_metadata) do
         if meta.keyword ~= "" then
             counts[meta.keyword] = (counts[meta.keyword] or 0) + 1
             table.insert(commands, { key = meta.keyword, index = counts[meta.keyword] })
         end
     end
+    
+    state.swarm_total = #commands
+    if state.swarm_total == 0 then 
+        state.active_command = nil 
+        return 
+    end
+
     for i = #commands, 1, -1 do
         local cmd = commands[i]
         local prefix = (cmd.index > 1) and (cmd.index .. ".") or ""
@@ -300,20 +338,21 @@ function bls_execute_next()
 end
 
 function backstab_success()
+    if state.swarm_total > 0 then state.swarm_hits = state.swarm_hits + 1 end
     if not state.active_command then return end
     state.waiting_for_hit = false
     if state.last_attempted_keyword then
-        debug_log("Result", "@GSUCCESS @w- Logged: @x226" .. state.last_attempted_keyword)
+        debug_log("Result", "@GSUCCESS @w- Logged: @Y" .. state.last_attempted_keyword)
         local mob_long = state.target_queue[1]
         local area = gmcpdata.room.info.zone or "Global"
         db:exec(string.format("UPDATE mob_keywords SET keyword = %s WHERE long_name = %s AND area = %s", fixsql(state.last_attempted_keyword), fixsql(mob_long), fixsql(area)))
-        state.last_attempted_keyword = nil
-        state.last_keyword_index = 1
+        state.last_attempted_keyword, state.last_keyword_index = nil, 1
     end
     state.pending_look = true
 end
 
 function backstab_fail_missing()
+    if state.swarm_total > 0 then state.swarm_misses = state.swarm_misses + 1 end
     if not state.active_command then return end
     debug_log("Result", "@RFAIL (Target Missing)")
     state.waiting_for_hit = false
@@ -328,27 +367,51 @@ function backstab_fail_protected(name, line, wildcards)
     if not state.active_command then return end
     debug_log("Result", "@RFAIL (Protected)")
     db:exec(string.format("UPDATE mob_keywords SET ignored = 1 WHERE long_name LIKE %s", fixsql("%" .. wildcards[1] .. "%")))
-    state.waiting_for_hit = false
-    state.active_command = nil
+    state.waiting_for_hit, state.active_command = false, nil
 end
 
 function display_list(name, line, wildcards)
-    local filter = wildcards.filter or ""
-    AnsiNote(ColoursToAnsi("@x051.----------------------------------------------------------------------."))
-    AnsiNote(ColoursToAnsi("@x051| @x242 ID  | Keyword    | Long Name                              | Area  @x051|"))
-    AnsiNote(ColoursToAnsi("@x051|----------------------------------------------------------------------|"))
-    local query = "SELECT id, keyword, long_name, area FROM mob_keywords"
-    if filter ~= "" then query = query .. " WHERE long_name LIKE " .. fixsql("%" .. filter .. "%") end
-    for row in db:nrows(query) do
-        local id, key, name, area = string.format("%-4d", row.id), string.format("%-10s", row.keyword or "???"), string.format("%-38s", row.long_name:sub(1,38)), string.format("%-5s", row.area:sub(1,5))
-        AnsiNote(ColoursToAnsi("@x051| @w" .. id .. " | @x226" .. key .. " @w| " .. name .. " | " .. area .. " @x051|"))
+    local filter = (wildcards.filter or ""):lower()
+    AnsiNote(ColoursToAnsi("@x051.--------------------------------------------------------------------------------."))
+    AnsiNote(ColoursToAnsi("@x051| @x242 ID  | Keyword    | Long Name                              | Area       | Stat @x051|"))
+    AnsiNote(ColoursToAnsi("@x051|--------------------------------------------------------------------------------|"))
+    
+    if filter == "queue" then
+        for i, mob_long in ipairs(state.target_queue) do
+            local meta = state.target_metadata[i]
+            local id = string.format("%-4s", "Q"..i)
+            local key = string.format("%-10s", meta.keyword ~= "" and meta.keyword or "???")
+            local name = string.format("%-38s", mob_long:sub(1,38))
+            local area = string.format("%-10s", (gmcpdata.room.info.zone or "Global"):sub(1,10))
+            AnsiNote(ColoursToAnsi("@x051| @w" .. id .. " | @Y" .. key .. " @w| " .. name .. " | " .. area .. " | @G[QUE] @x051|"))
+        end
+    else
+        local query = "SELECT id, keyword, long_name, area, ignored FROM mob_keywords"
+        if filter ~= "" then 
+            query = query .. " WHERE long_name LIKE " .. fixsql("%" .. filter .. "%") .. " OR area LIKE " .. fixsql("%" .. filter .. "%") 
+        end
+        for row in db:nrows(query) do
+            local id = string.format("%-4d", row.id)
+            local key = string.format("%-10s", row.keyword or "???")
+            local name = string.format("%-38s", row.long_name:sub(1,38))
+            local area = string.format("%-10s", (row.area or "Global"):sub(1,10))
+            local status = (row.ignored == 1) and "@R[IGN]" or "@G[OK] "
+            AnsiNote(ColoursToAnsi("@x051| @w" .. id .. " | @Y" .. key .. " @w| " .. name .. " | " .. area .. " | " .. status .. " @x051|"))
+        end
     end
-    AnsiNote(ColoursToAnsi("@x051'----------------------------------------------------------------------'"))
+    AnsiNote(ColoursToAnsi("@x051'--------------------------------------------------------------------------------'"))
 end
 
 function bls_set_keyword(name, line, wildcards)
     db:exec(string.format("UPDATE mob_keywords SET keyword = %s WHERE id = %d", fixsql(wildcards.key), tonumber(wildcards.id)))
-    AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wID " .. wildcards.id .. " updated: @x226" .. wildcards.key))
+    AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wID " .. wildcards.id .. " updated: @Y" .. wildcards.key))
+end
+
+function bls_ignore_toggle(name, line, wildcards)
+    local val = (wildcards[1] == "ignore") and 1 or 0
+    db:exec(string.format("UPDATE mob_keywords SET ignored = %d WHERE id = %d", val, tonumber(wildcards.id)))
+    local status = (val == 1) and "@RIgnored" or "@GActive"
+    AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wID " .. wildcards.id .. " set to: " .. status))
 end
 
 function bls_remove_entry(name, line, wildcards)
@@ -361,7 +424,7 @@ function bls_wipe_handler(name, line, wildcards)
         db:exec("DELETE FROM mob_keywords")
         AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @RDatabase purged."))
     else
-        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wUse '@x226bls wipe confirm@w' to clear database."))
+        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wUse '@Ybls wipe confirm@w' to clear database."))
     end
 end
 
