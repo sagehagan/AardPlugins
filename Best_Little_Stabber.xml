@@ -37,6 +37,7 @@
 
 <script>
 <![CDATA[
+require "gmcphelper"
 local sqlite3 = require "sqlite3"
 local db_path = GetInfo(6) .. "BestLittleStabber.db"
 local db = nil
@@ -109,13 +110,13 @@ function debug_log(cat, msg)
 end
 
 function OnPluginBroadcast(msg, id, name, text)
-    if (id == '3e7dedbe37e44942dd46d264') then
-        local res_r, gmcparg_r = CallPlugin(id, "gmcpval", "room")
-        if res_r == 0 then loadstring("gmcpdata.room = " .. gmcparg_r)() end
-        
-        local res_c, gmcparg_c = CallPlugin(id, "gmcpval", "char")
-        if res_c == 0 then 
-            loadstring("gmcpdata.char = " .. gmcparg_c)()
+        if (id == '3e7dedbe37e44942dd46d264') then
+            local area = gmcp("room.info.zone") or "Global"
+            local current_state = tostring(gmcp("char.status.state") or "0")
+
+        -- Debug messaging for event tracking
+        if GetVariable("debug") == "1" then
+            debug_log("GMCP", "Data synchronized: room and char objects updated.")
         end
 
         local current_state = tostring(gmcpdata.char.status.state)
@@ -240,6 +241,7 @@ end
 
 function process_mob_line(name, line, wildcards)
     local text = wildcards[1]
+    text = text:gsub("%s*%[.-%]", "")
     if text:find("%(Player%)") or text:find("%(P%)") or text:find("%(Charmed%)") or text:find("%(C%)") or text:find("%(Angry%)") or text:find("%(Archaeology%)") or text:find("is fighting") then return end
 
     if text:match("^%s*%(") or text:match("^%s*[A-Z]") then
@@ -259,7 +261,7 @@ function handle_captured_mob(mob_raw)
     local mob_long = trim(mob_raw:gsub("%b()", ""))
     if mob_long == "" or mob_long:len() < 3 then return end
     
-    local area = gmcpdata.room.info.zone or "Global"
+    local area = gmcp("room.info.zone") or "Global"
     local keyword, ignored, exists = "", 0, false
     
     local stmt = db:prepare("SELECT keyword, ignored FROM mob_keywords WHERE long_name = ? AND area = ?")
@@ -376,7 +378,7 @@ function backstab_success()
     if state.last_attempted_keyword then
         debug_log("Result", "@GSUCCESS @w- Logged: @Y" .. state.last_attempted_keyword)
         local mob_long = state.target_queue[1]
-        local area = gmcpdata.room.info.zone or "Global"
+        local area = gmcp("room.info.zone") or "Global"
         db:exec(string.format("UPDATE mob_keywords SET keyword = %s WHERE long_name = %s AND area = %s", fixsql(state.last_attempted_keyword), fixsql(mob_long), fixsql(area)))
         state.last_attempted_keyword, state.last_keyword_index = nil, 1
     end
@@ -457,8 +459,17 @@ end
 
 function bls_wipe_handler(name, line, wildcards)
     if wildcards[1] == " confirm" then
+        -- Clear the data
         db:exec("DELETE FROM mob_keywords")
-        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @RDatabase purged."))
+        -- Reset the auto-increment counter
+        db:exec("DELETE FROM sqlite_sequence WHERE name='mob_keywords'")
+        
+        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @RDatabase purged and ID counter reset."))
+        
+        -- Robust debug messaging
+        if GetVariable("debug") == "1" then
+            debug_log("Database", "Table 'mob_keywords' cleared and sequence reset to 1.")
+        end
     else
         AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wUse '@Ybls wipe confirm@w' to clear database."))
     end
