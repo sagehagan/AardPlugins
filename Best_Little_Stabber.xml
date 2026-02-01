@@ -240,7 +240,7 @@ end
 
 function process_mob_line(name, line, wildcards)
     local text = wildcards[1]
-    if text:find("%(Player%)") or text:find("%(Charmed%)") or text:find("%(Angry%)") or text:find("%(Archaeology%)") or text:find("is fighting") then return end
+    if text:find("%(Player%)") or text:find("%(P%)") or text:find("%(Charmed%)") or text:find("%(C%)") or text:find("%(Angry%)") or text:find("%(Archaeology%)") or text:find("is fighting") then return end
 
     if text:match("^%s*%(") or text:match("^%s*[A-Z]") then
         if state.raw_buffer ~= "" then handle_captured_mob(trim(state.raw_buffer)) end
