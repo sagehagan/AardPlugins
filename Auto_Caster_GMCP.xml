@@ -58,6 +58,7 @@
     <alias match="^ac$" enabled="y" regexp="y" script="AliasHandler" sequence="100" />
     <alias match="caster status" enabled="y" ignore_case="y" script="ShowStatus" />
     <alias match="caster help" enabled="y" ignore_case="y" script="ShowHelp" />
+    <alias match="sendopennow" enabled="y" ignore_case="y" script="SendOpenerCommand" />
   </aliases>
 
   <script>
@@ -438,6 +439,10 @@
                 Caster.using_alt = false; Caster.temp_disable = false; Caster.pause_cast = false; Caster.last_recast_time = 0; Caster.backstab_pending = false
             end
         end
+    end
+
+    function SendOpenerCommand()
+        Execute(Caster.cfg.opener)
     end
 
     --- Exposes the raw Opener string to other plugins
