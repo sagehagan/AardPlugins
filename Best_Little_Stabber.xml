@@ -443,7 +443,7 @@ function display_list(name, line, wildcards)
             s_color = "#FF0000" -- Ignored
             s_char = "[I]"
         elseif (row.keyword == "" or row.keyword == nil) then
-            s_color = "#FFFF00" -- Discover
+            s_color = "#FFD700" -- Discover
             s_char = "[L]"
         end
 
@@ -460,7 +460,7 @@ function display_list(name, line, wildcards)
         ColourTell("#707070", "", "| ")
         
         -- The Clickable Keyword (No Underline)
-        Hyperlink("bls_edit_popup " .. row.id, keyword_text, "Click to edit keyword", "#FFFF00", "", false)
+        Hyperlink("bls_edit_popup " .. row.id, keyword_text, "Click to edit keyword", "#FFD700", "", false)
         
         -- The End of Row
         ColourTell("#707070", "", padding .. " | ")
@@ -555,7 +555,7 @@ end
             s_color = "#FF0000" -- Ignored [I]
             s_char = "[I]"
         elseif (row.keyword == "" or row.keyword == nil) then
-            s_color = "#FFFF00" -- Discover [L]
+            s_color = "#FFD700" -- Discover [L]
             s_char = "[L]"
         end
 
@@ -574,7 +574,7 @@ end
         ColourTell("#707070", "", "| ")
         
         -- PART 2: THE HYPERLINK (No underline)
-        Hyperlink("bls_edit_popup " .. row.id, keyword_text, "Click to edit keyword", "#FFFF00", "", false)
+        Hyperlink("bls_edit_popup " .. row.id, keyword_text, "Click to edit keyword", "#F0E68C", "", false)
         
         -- PART 3: Padding, Status, and Long Name
         ColourTell("#707070", "", padding .. " | ")
