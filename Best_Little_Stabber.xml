@@ -33,6 +33,7 @@
   <alias match="^bls remove (?&lt;id&gt;\d+)$" enabled="y" regexp="y" script="bls_remove_entry" />
   <alias match="^bls wipe( confirm)?$" enabled="y" regexp="y" script="bls_wipe_handler" />
   <alias match="^bls rem (?<area>.*)$" enabled="y" regexp="y" script="bls_remove_area" />
+<alias match="^bls find (.*)$" enabled="y" regexp="y" script="bls_find_long" />
 </aliases>
 
 <script>
@@ -144,7 +145,7 @@ function bls_control(name, line, wildcards)
         AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wDebug: " .. (debug_mode and "@GEnabled" or "@REnabled")))
     elseif cmd == "status" then
         display_status()
-elseif cmd == "help" then
+    elseif cmd == "help" then
         AnsiNote(ColoursToAnsi("\n@x196[@x242BLS@x196] @wHelp Menu - V22.6"))
         
         local function help_line(cmd, desc)
@@ -160,6 +161,7 @@ elseif cmd == "help" then
         -- Database Section
         AnsiNote(ColoursToAnsi("\n@x242  Database Management\n  " .. string.rep("-", 50)))
         help_line("bls list <zone>", "Display mob DB - Zone Filter Optional")
+        help_line("bls find <text>", "Search database for a mob long name") -- Added search command
         help_line("bls set <id> <key>", "Set manual keyword for ID")
         help_line("bls ignore <id>", "Set ID to Ignored [I]")
         help_line("bls unignore <id>", "Return ID to active [K/L]")
@@ -242,7 +244,7 @@ end
 function process_mob_line(name, line, wildcards)
     local text = wildcards[1]
     text = text:gsub("%s*%[.-%]", "")
-    if text:find("%(Player%)") or text:find("%(P%)") or text:find("%(Charmed%)") or text:find("%(C%)") or text:find("%(Angry%)") or text:find("%(Archaeology%)") or text:find("is fighting") then return end
+    if text:find("%(Player%)") or text:find("%(P%)") or text:find("%(Charmed%)") or text:find("%(C%)") or text:find("%(Angry%)") or text:find("%(Archaeology%)") or text:find("is fighting") or text:find("KILL YOU!")then return end
 
     if text:match("^%s*%(") or text:match("^%s*[A-Z]") then
         if state.raw_buffer ~= "" then handle_captured_mob(trim(state.raw_buffer)) end
@@ -475,16 +477,58 @@ function bls_wipe_handler(name, line, wildcards)
     end
 end
 
-function fixsql(s) return "'" .. (tostring(s):gsub("'", "''")) .. "'" end
-function trim(s) return s:match("^%s*(.-)%s*$") end
+    function fixsql(s) return "'" .. (tostring(s):gsub("'", "''")) .. "'" end
+    function trim(s) return s:match("^%s*(.-)%s*$") end
 
-function bls_remove_area(name, line, wildcards)
-    local area = wildcards.area
-    local res = db:exec(string.format("DELETE FROM mob_keywords WHERE area LIKE %s", fixsql("%" .. area .. "%")))
-    if res == sqlite3.OK then
-        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wAll entries for area matching '@Y" .. area .. "@w' have been removed."))
+    function bls_remove_area(name, line, wildcards)
+        local area = wildcards.area
+        local res = db:exec(string.format("DELETE FROM mob_keywords WHERE area LIKE %s", fixsql("%" .. area .. "%")))
+        if res == sqlite3.OK then
+            AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @wAll entries for area matching '@Y" .. area .. "@w' have been removed."))
+        else
+            AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @RError removing area entries."))
+        end
+    end
+
+function bls_find_long(name, line, wildcards)
+    local filter = wildcards[1] or ""
+    
+    -- Exact same query logic as display_list, but focused on the search term
+    local query = "SELECT * FROM mob_keywords WHERE long_name LIKE " .. fixsql("%" .. filter .. "%") .. " ORDER BY id ASC"
+
+    AnsiNote(ColoursToAnsi("\n@x196[@x242BLS@x196] @wSearch Results: '@Y" .. filter .. "@w'"))
+    
+    -- Headers: Exact match to your display_list function
+    local header = string.format("@x242  %-4s | %-15s | %-12s | %-3s | %-s", "ID", "Area", "Keyword", "S", "Long Name")
+    AnsiNote(ColoursToAnsi(header))
+    
+    -- Header underline (65 dashes)
+    AnsiNote(ColoursToAnsi("@x242  " .. string.rep("-", 65)))
+
+    local count = 0
+    for row in db:nrows(query) do
+        count = count + 1
+        local status = "@x034[K]" -- Known (Green)
+        if row.ignored == 1 then
+            status = "@x160[I]" -- Ignored (Red)
+        elseif row.keyword == "" then
+            status = "@x226[L]" -- Learning (Yellow)
+        end
+
+        -- Area truncation logic
+        local area = (row.area:len() > 15) and (row.area:sub(1,12) .. "...") or row.area
+        
+        -- Row formatting: Exact match to your display_list function
+        local line_out = string.format("@x242  %-4d | @w%-15s @x242| @Y%-12s @x242| %s @x242| @w%s", 
+            row.id, area, (row.keyword == "" and "???" or row.keyword), status, row.long_name)
+        AnsiNote(ColoursToAnsi(line_out))
+    end
+    
+    if count == 0 then
+        AnsiNote(ColoursToAnsi("@x242  No matches found for: @Y" .. filter))
     else
-        AnsiNote(ColoursToAnsi("@x196[@x242BLS@x196] @RError removing area entries."))
+        -- Status Footer
+        AnsiNote(ColoursToAnsi("\n@x242Status: @x034[K]@w=Known @x226[L]@w=Learning @x160[I]@w=Ignore\n"))
     end
 end
 
