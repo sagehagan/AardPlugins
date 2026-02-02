@@ -32,7 +32,7 @@
   <alias match="^bls (ignore|unignore) (?&lt;id&gt;\d+)$" enabled="y" regexp="y" script="bls_ignore_toggle" />
   <alias match="^bls wipe( confirm)?$" enabled="y" regexp="y" script="bls_wipe_handler" />
 <alias match="^bls search (.*)$" enabled="y" regexp="y" script="bls_find_long" />
-<alias match="^bls find (?<search>\w+)(?: (?<area>.*))?$" enabled="y" regexp="y" script="bls_find_keyword" />
+<alias match="^bls (?:key|find) (?<search>.+?)(?: (?<area>.+))?$" enabled="y" regexp="y" script="bls_find_keyword" />
 <alias match="^bls rem (?<target>.*)$" enabled="y" regexp="y" script="bls_remove_combined" />
 <alias match="^bls_edit_popup (?<id>\d+)$" enabled="y" regexp="y" script="bls_edit_keyword_popup" />
 </aliases>
@@ -409,39 +409,72 @@ function backstab_fail_protected(name, line, wildcards)
 end
 
 function display_list(name, line, wildcards)
-    local filter = wildcards.filter or ""
+    local filter = (wildcards.filter or ""):gsub("^%s*(.-)%s*$", "%1")
     local query = "SELECT * FROM mob_keywords"
-    if filter ~= "" then
-        query = query .. " WHERE long_name LIKE " .. fixsql("%" .. filter .. "%") .. " OR area LIKE " .. fixsql("%" .. filter .. "%")
+    
+    -- Special logic to handle "???" as a search term for empty entries
+    if filter == "???" then
+        query = query .. " WHERE (keyword IS NULL OR keyword = '')"
+    elseif filter ~= "" then
+        query = query .. " WHERE long_name LIKE " .. fixsql("%" .. filter .. "%") .. 
+                         " OR area LIKE " .. fixsql("%" .. filter .. "%")
     end
-    -- Sort strictly by ID as requested
+    
     query = query .. " ORDER BY id ASC"
 
-    AnsiNote(ColoursToAnsi("\n@x196[@x242BLS@x196] @wTarget Database"))
+    local header = "\n@x196[@x242BLS@x196] @wSearch Results: "
+    if filter ~= "" then header = header .. " @w(Filter: '@Y" .. filter .. "@w')" end
     
-    -- Headers with internal bars only
-    local header = string.format("@x242  %-4s | %-15s | %-12s | %-3s | %-s", "ID", "Area", "Keyword", "S", "Long Name")
     AnsiNote(ColoursToAnsi(header))
+    AnsiNote("")
     
-    -- Header underline (dashes) - calculating length based on header string
+    -- Header
+    AnsiNote(ColoursToAnsi("@x242  ID   | Area            | Keyword      | S   | Long Name"))
     AnsiNote(ColoursToAnsi("@x242  " .. string.rep("-", 65)))
 
+    local count = 0
     for row in db:nrows(query) do
-        local status = "@x034[K]" -- Known (Green)
+        count = count + 1
+        
+        -- Labels: Trusted = Swarm [K], Untrusted = Discover [L]
+        local s_color = "#00FF00" -- Swarm
+        local s_char = "[K]"
         if row.ignored == 1 then
-            status = "@x160[I]" -- Ignored (Red)
-        elseif row.keyword == "" then
-            status = "@x226[L]" -- Learning (Yellow)
+            s_color = "#FF0000" -- Ignored
+            s_char = "[I]"
+        elseif (row.keyword == "" or row.keyword == nil) then
+            s_color = "#FFFF00" -- Discover
+            s_char = "[L]"
         end
 
-        local area = (row.area:len() > 15) and (row.area:sub(1,12) .. "...") or row.area
-        -- Rows with internal bars only
-        local line = string.format("@x242  %-4d | @w%-15s @x242| @Y%-12s @x242| %s @x242| @w%s", 
-            row.id, area, (row.keyword == "" and "???" or row.keyword), status, row.long_name)
-        AnsiNote(ColoursToAnsi(line))
+        local area_display = (row.area:len() > 15) and (row.area:sub(1,12) .. "...") or row.area
+        local keyword_text = (row.keyword == "" or row.keyword == nil) and "???" or row.keyword
+        
+        -- Alignment Padding (Width 12)
+        local padding_count = 12 - string.len(keyword_text)
+        local padding = string.rep(" ", (padding_count < 0 and 0 or padding_count))
+        
+        -- Start of Row
+        ColourTell("#707070", "", string.format("  %-4d | ", row.id))
+        ColourTell("#B0B0B0", "", string.format("%-15s ", area_display))
+        ColourTell("#707070", "", "| ")
+        
+        -- The Clickable Keyword (No Underline)
+        Hyperlink("bls_edit_popup " .. row.id, keyword_text, "Click to edit keyword", "#FFFF00", "", false)
+        
+        -- The End of Row
+        ColourTell("#707070", "", padding .. " | ")
+        ColourTell(s_color, "", s_char)
+        ColourTell("#707070", "", " | ")
+        ColourNote("#B0B0B0", "", row.long_name) 
     end
     
-    AnsiNote(ColoursToAnsi("\n@x242Status: @x034[K]@w=Known @x226[L]@w=Learning @x160[I]@w=Ignore\n"))
+    if count == 0 then
+        AnsiNote(ColoursToAnsi("@x242  No records found."))
+    else
+        -- Footer with Swarm/Discover terminology
+        AnsiNote(ColoursToAnsi("\n@x242Status: @x034[K]@w=Swarm @x226[L]@w=Discover @x160[I]@w=Ignore\n"))
+    end
 end
 
 function bls_set_keyword(name, line, wildcards)
@@ -499,107 +532,131 @@ end
     end
 
     function bls_find_long(name, line, wildcards)
-        local filter = wildcards[1] or ""
-        
-        -- Exact same query logic as display_list, but focused on the search term
-        local query = "SELECT * FROM mob_keywords WHERE long_name LIKE " .. fixsql("%" .. filter .. "%") .. " ORDER BY id ASC"
-
-        AnsiNote(ColoursToAnsi("\n@x196[@x242BLS@x196] @wSearch Results: '@Y" .. filter .. "@w'"))
-        
-        -- Headers: Exact match to your display_list function
-        local header = string.format("@x242  %-4s | %-15s | %-12s | %-3s | %-s", "ID", "Area", "Keyword", "S", "Long Name")
-        AnsiNote(ColoursToAnsi(header))
-        
-        -- Header underline (65 dashes)
-        AnsiNote(ColoursToAnsi("@x242  " .. string.rep("-", 65)))
-
-        local count = 0
-        for row in db:nrows(query) do
-            count = count + 1
-            local status = "@x034[K]" -- Known (Green)
-            if row.ignored == 1 then
-                status = "@x160[I]" -- Ignored (Red)
-            elseif row.keyword == "" then
-                status = "@x226[L]" -- Learning (Yellow)
-            end
-
-            -- Area truncation logic
-            local area = (row.area:len() > 15) and (row.area:sub(1,12) .. "...") or row.area
-            
-            -- Row formatting: Exact match to your display_list function
-            local line_out = string.format("@x242  %-4d | @w%-15s @x242| @Y%-12s @x242| %s @x242| @w%s", 
-                row.id, area, (row.keyword == "" and "???" or row.keyword), status, row.long_name)
-            AnsiNote(ColoursToAnsi(line_out))
-        end
-        
-        if count == 0 then
-            AnsiNote(ColoursToAnsi("@x242  No matches found for: @Y" .. filter))
-        else
-            -- Status Footer
-            AnsiNote(ColoursToAnsi("\n@x242Status: @x034[K]@w=Known @x226[L]@w=Learning @x160[I]@w=Ignore\n"))
-        end
-    end
-
-function bls_find_keyword(name, line, wildcards)
-    local search = wildcards.search
-    local area_filter = wildcards.area or ""
+    local filter = (wildcards[1] or ""):gsub("^%s*(.-)%s*$", "%1")
+    local count = 0
     
-    local query = "SELECT * FROM mob_keywords WHERE keyword LIKE " .. fixsql("%" .. search .. "%")
-    if area_filter ~= "" then
-        query = query .. " AND area LIKE " .. fixsql("%" .. area_filter .. "%")
-    end
-    query = query .. " ORDER BY id ASC"
+    -- Focus on the long_name for this search
+    local query = "SELECT * FROM mob_keywords WHERE long_name LIKE " .. fixsql("%" .. filter .. "%") .. " ORDER BY id ASC"
 
-    -- Header (Kept in your original style)
-    AnsiNote(ColoursToAnsi("\n@x196[@x242BLS@x196] @wKeyword Search: '@Y" .. search .. (area_filter ~= "" and "@w' in '@Y" .. area_filter or "") .. "@w'"))
-    AnsiNote(ColoursToAnsi("@x242  ID   | Area            | Keyword      | S   | Long Name"))
+    AnsiNote(ColoursToAnsi("\n@x196[@x242BLS@x196] @wSearch Results: @Y" .. filter))
+    AnsiNote("")
+    
+    -- Header
+    AnsiNote(ColoursToAnsi("@x242  ID   @x196|@x242 Area            @x196|@x242 Keyword      @x196|@x242 S   @x196|@x242 Long Name"))
     AnsiNote(ColoursToAnsi("@x242  " .. string.rep("-", 65)))
 
-    local count = 0
     for row in db:nrows(query) do
         count = count + 1
         
-        -- Logic for Status Color
-        local s_color = "#00FF00" -- Green [K]
+        -- Logic for Status Color (Swarm/Discover/Ignore)
+        local s_color = "#00FF00" -- Swarm [K]
         local s_char = "[K]"
         if row.ignored == 1 then
-            s_color = "#FF0000" -- Red [I]
+            s_color = "#FF0000" -- Ignored [I]
             s_char = "[I]"
-        elseif row.keyword == "" then
-            s_color = "#FFFF00" -- Yellow [L]
+        elseif (row.keyword == "" or row.keyword == nil) then
+            s_color = "#FFFF00" -- Discover [L]
             s_char = "[L]"
         end
 
+        -- Handle display formatting
         local area_display = (row.area:len() > 15) and (row.area:sub(1,12) .. "...") or row.area
-        local keyword_text = (row.keyword == "" and "???" or row.keyword)
+        local keyword_text = (row.keyword == "" or row.keyword == nil) and "???" or row.keyword
         
-        -- Calculate padding: 12 is the column width
+        -- Calculate padding for the Keyword column (width 12)
         local padding_count = 12 - string.len(keyword_text)
         if padding_count < 0 then padding_count = 0 end
         local padding = string.rep(" ", padding_count)
         
         -- PART 1: ID and Area
         ColourTell("#707070", "", string.format("  %-4d | ", row.id))
-        ColourTell("#FFFFFF", "", string.format("%-15s ", area_display))
+        ColourTell("#B0B0B0", "", string.format("%-15s ", area_display))
         ColourTell("#707070", "", "| ")
         
-        -- PART 2: THE HYPERLINK (No padding inside the link)
+        -- PART 2: THE HYPERLINK (No underline)
         Hyperlink("bls_edit_popup " .. row.id, keyword_text, "Click to edit keyword", "#FFFF00", "", false)
         
-        -- PART 3: THE PADDING (Normal text, no underline)
-        ColourTell("#707070", "", padding)
-        
-        -- PART 4: Status and Long Name
-        ColourTell("#707070", "", " | ")
+        -- PART 3: Padding, Status, and Long Name
+        ColourTell("#707070", "", padding .. " | ")
         ColourTell(s_color, "", s_char)
         ColourTell("#707070", "", " | ")
-        ColourNote("#FFFFFF", "", row.long_name)
+        ColourNote("#B0B0B0", "", row.long_name) 
     end
     
     if count == 0 then
-        AnsiNote(ColoursToAnsi("@x242  No keyword matches found."))
+        AnsiNote(ColoursToAnsi("@x242  No matches found for: @Y" .. filter))
     else
-        AnsiNote(ColoursToAnsi("\n@x242Status: @x034[K]@w=Known @x226[L]@w=Learning @x160[I]@w=Ignore\n"))
+        -- Status Footer using your preferred labels
+        AnsiNote(ColoursToAnsi("\n@x242Status: @x034[K]@w=Swarm @x226[L]@w=Discover @x160[I]@w=Ignore\n"))
+    end
+end
+
+function bls_find_keyword(name, line, wildcards)
+    -- Trim whitespace just in case
+    local search = wildcards.search:gsub("^%s*(.-)%s*$", "%1")
+    local area_filter = (wildcards.area or ""):gsub("^%s*(.-)%s*$", "%1")
+    local count = 0
+    local query
+    
+    -- Check if we are searching for missing keywords
+    if search == "???" then
+        query = "SELECT * FROM mob_keywords WHERE (keyword IS NULL OR keyword = '')"
+    else
+        query = "SELECT * FROM mob_keywords WHERE keyword LIKE " .. fixsql("%" .. search .. "%")
+    end
+
+    -- Filter by area if provided
+    if area_filter ~= "" then
+        query = query .. " AND area LIKE " .. fixsql("%" .. area_filter .. "%")
+    end
+    
+    query = query .. " ORDER BY id ASC"
+
+    local header = "\n@x196[@x242BLS@x196] @wSearch Results: @Y" .. search
+    if area_filter ~= "" then header = header .. " @w(Filter: '@Y" .. area_filter .. "@w')" end
+    
+    AnsiNote(ColoursToAnsi(header))
+    AnsiNote("")
+    AnsiNote(ColoursToAnsi("@x242  ID   @x196|@x242 Area            @x196|@x242 Keyword      @x196|@x242 S   @x196|@x242 Long Name"))
+    AnsiNote(ColoursToAnsi("@x242  " .. string.rep("-", 65)))
+
+    for row in db:nrows(query) do
+        count = count + 1
+        
+        -- Labels based on preference: Trusted=Swarm, Untrusted=Discover
+        local s_color = "#00FF00" -- Swarm
+        local s_char = "[K]"
+        if row.ignored == 1 then
+            s_color = "#FF0000" -- Ignore
+            s_char = "[I]"
+        elseif (row.keyword == "" or row.keyword == nil) then
+            s_color = "#FFFF00" -- Discover
+            s_char = "[L]"
+        end
+
+        local area_display = (row.area:len() > 15) and (row.area:sub(1,12) .. "...") or row.area
+        local keyword_text = (row.keyword == "" or row.keyword == nil) and "???" or row.keyword
+        
+        local padding_count = 12 - string.len(keyword_text)
+        local padding = string.rep(" ", (padding_count < 0 and 0 or padding_count))
+        
+        -- Drawing the row
+        ColourTell("#707070", "", string.format("  %-4d | ", row.id))
+        ColourTell("#B0B0B0", "", string.format("%-15s ", area_display))
+        ColourTell("#707070", "", "| ")
+        
+        Hyperlink("bls_edit_popup " .. row.id, keyword_text, "Click to set keyword", "#FFFF00", "", false)
+        
+        ColourTell("#707070", "", padding .. " | ")
+        ColourTell(s_color, "", s_char)
+        ColourTell("#707070", "", " | ")
+        ColourNote("#B0B0B0", "", row.long_name) 
+    end
+    
+    if count == 0 then
+        AnsiNote(ColoursToAnsi("@x242  No matches found."))
+    else
+        AnsiNote(ColoursToAnsi("\n@x242Status: @x034[K]@w=Swarm @x226[L]@w=Discover @x160[I]@w=Ignore\n"))
     end
 end
 
