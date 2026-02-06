@@ -167,11 +167,9 @@ function AdjustGold(amt)
     DebugMsg(string.format("@CPup Gold: @W%s @R| @CDaily Gold: @W%s", CommaValue(newPup.gold), CommaValue(t_gold)))
 end
 
--- HISTORY AND DATE LOGIC
-function GetESTDate()
-    local utc_time = os.time(os.date("!*t"))
-    local est_offset = 5 * 3600
-    return os.date("%d %b %Y", utc_time - est_offset)
+function GetServerDate()
+    -- UTC anchor (!) minus 18,000 seconds (5 hours) for EST
+    return os.date("!%d %b %Y", os.time() - 18000)
 end
 
 function CleanDate(s)
@@ -322,21 +320,57 @@ function OutputMessage(msg)
     if log_tab ~= "" then CallPlugin("b555825a4a5700c35fa80780", "storeFromOutside", msg, log_tab) end
 end
 
--- TIMER AND SYSTEM HOOKS
-function TmrPulse(name)
-    local currDate = GetESTDate()
-    if t_date ~= currDate then
-        local sTime = 0; for _,v in ipairs(today_times) do sTime = sTime + v end
-        local avgToday = (#today_times > 0) and (sTime / #today_times) or 0
-        local final_data = GetLine("SUMMARY: "..t_date, t_pups, t_trains, t_gold, avgToday)
-        OutputMessage("@R[@WFINAL " .. final_data .. "@R]")
-        table.insert(daily_archive, { date = t_date, pups = t_pups, trains = t_trains, gold = t_gold, avg = avgToday, time_count = #today_times })
-        if #daily_archive > 30 then table.remove(daily_archive, 1) end
-        t_date = currDate; t_trains, t_pups, t_gold = 0, 0, 0
-        g_corpse, g_crumble, g_split, g_sac, g_sell, g_haggle = 0, 0, 0, 0, 0, 0
-        history, today_times = {}, {}; SaveState()
+local timer_count = 0
+
+function TmrPulse()
+    if not initialized then return end
+    
+    timer_count = timer_count + 1
+    local current_server_date = GetServerDate()
+    
+    -- 1. HANDLE EST DATE ROLLOVER
+    if t_date ~= current_server_date then
+        if debug_mode then
+            AnsiNote("@D[Debug] EST Rollover detected. Archiving " .. t_date .. " and moving to " .. current_server_date)
+        end
+
+        if t_pups > 0 or t_trains > 0 then
+            local s = 0
+            for _, v in ipairs(today_times) do s = s + v end
+            local avg = (#today_times > 0) and (s / #today_times) or 0
+            
+            table.insert(daily_archive, 1, {
+                date = t_date,
+                pups = t_pups,
+                trains = t_trains,
+                gold = t_gold,
+                avg = math.floor(avg)
+            })
+            
+            while #daily_archive > 10 do table.remove(daily_archive) end
+        end
+        
+        t_date = current_server_date
+        t_pups, t_trains, t_gold = 0, 0, 0
+        today_times = {}
+        SaveState()
     end
-    if report_active and os.time() - report_start_time >= 300 then ExecuteReport() end
+
+    -- 2. HANDLE 5-MINUTE REPORTING (300 Seconds)
+    if timer_count >= 300 then
+        if debug_mode then
+            AnsiNote("@D[Debug] 5-minute pulse reached. Executing auto-report.")
+        end
+        
+        -- Trigger your report function here
+        -- Replace 'DoFiveMinuteReport()' with the actual name of your reporting function
+        if type(DoFiveMinuteReport) == "function" then
+            DoFiveMinuteReport()
+        end
+        
+        timer_count = 0
+        SaveState() -- Frequent saves to prevent data loss
+    end
 end
 
 function ManualReport(name, line, wildcards)
@@ -369,14 +403,20 @@ function tracker_settings(n,l,w) rep_chan = w[1]; SetVariable("repchan", rep_cha
 function tracker_log_settings(n,l,w) log_tab = w[1]=="off" and "" or w[1]; SetVariable("log_tab", log_tab); AnsiNote("@R[ @WHeracles @R] @DLogging to Tab: @W"..(log_tab=="" and "OFF" or log_tab)) end
 
 function OnPluginInstall()
-    t_date = GetESTDate()
+    -- Uses GetServerDate for universal EST tracking
+    t_date = GetServerDate()
+    
     t_trains = tonumber(GetVariable("today_trains")) or 0; t_pups = tonumber(GetVariable("today_pups")) or 0; t_gold = tonumber(GetVariable("today_gold")) or 0
     g_corpse, g_crumble, g_split, g_sac, g_sell, g_haggle = tonumber(GetVariable("g_corpse")) or 0, tonumber(GetVariable("g_crumble")) or 0, tonumber(GetVariable("g_split")) or 0, tonumber(GetVariable("g_sac")) or 0, tonumber(GetVariable("g_sell")) or 0, tonumber(GetVariable("g_haggle")) or 0
     rep_chan = GetVariable("repchan") or "print"; log_tab = GetVariable("log_tab") or ""; debug_mode = (GetVariable("debug_mode") == "y")
+    
     local h_var = GetVariable("history_table"); if h_var and h_var ~= "" then history = loadstring("return " .. h_var)() or {} end
     local t_var = GetVariable("today_times_table"); if t_var and t_var ~= "" then today_times = loadstring("return " .. t_var)() or {} end
     local a_var = GetVariable("daily_archive"); if a_var and a_var ~= "" then daily_archive = loadstring("return " .. a_var)() or {} end
+    
     last_pup_time = GetInfo(304)
+    initialized = true
+
     AnsiNote("@R[ @WHeracles @R] @DPup Tracker Loaded. Type @Cpt help @Dfor commands")
 end
 
