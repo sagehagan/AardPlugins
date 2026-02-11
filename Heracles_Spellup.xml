@@ -256,36 +256,41 @@ end
 
 function OnSFail(name, line, wildcards)
     local sn, reason = wildcards[1], tonumber(wildcards[3])
-    if not spell_registry[sn] then return end
     local d = spell_registry[sn]
+    if not d then return end
 
     if reason == 3 then 
+        -- Standard recovery lock (Skill/Spell not ready yet)
         d.current_rec = wildcards[4]
         d.recovery_lock = true
-        RobustDebug("SFail", d.name, "REC_ON", "Recovery timer started.")
+        RobustDebug("SFail", d.name, "REC_ON", "Recovery timer active.")
     elseif reason == 8 then
+        -- Access denied / Requirement not met: Stop recasting
         d.needs_recast = false
-        RobustDebug("SFail", d.name, "ABORT", "Reason 8: Access denied or conflict. Skipping recast.")
+        RobustDebug("SFail", d.name, "ABORT", "Reason 8: Stopping recast attempts.")
     elseif reason == 6 then 
-        if not d.verified_combat then
-            d.non_combat = true
-            d.verified_combat = false
-            SaveData()
-        end
+        -- Concentration failure: Keep trying
         d.needs_recast = true 
-        RobustDebug("SFail", d.name, "RECAST", "Failed due to combat; flagged for standing.")
+        RobustDebug("SFail", d.name, "RECAST", "Concentration failed.")
+        
+        -- Sanctuary Fail-safe
+        if d.name:lower() == "sanctuary" and eq_config.current_worn:lower() == eq_config.float_name:lower() then
+            if eq_config.aura_id:lower() ~= "none" then
+                RobustDebug("SFail", d.name, "WEAR", "Failed Sanc in float. Equipping Aura.")
+                Execute("wear " .. eq_config.aura_id)
+            end
+        end
     elseif reason == 2 then 
+        -- Already affected: Stop recasting and mark active
+        d.needs_recast = false 
+        d.is_active = true
+        
+        -- Sanctuary swap back to float if active
         if d.name:lower() == "sanctuary" and eq_config.current_worn:lower() == eq_config.aura_name:lower() then
              if eq_config.float_id:lower() ~= "none" then
-                 RobustDebug("SFail", d.name, "SWAP", "Sanc already on via Aura. Swapping to float.")
+                 RobustDebug("SFail", d.name, "SWAP", "Sanc active. Swapping to float.")
                  Execute("wear " .. eq_config.float_id)
-                 d.needs_recast = true
-                 AttemptCast(sn, "SFail_Recovery")
              end
-        else
-            d.needs_recast = false 
-            d.is_active = true
-            RobustDebug("SFail", d.name, "SKIP", "Already active.")
         end
     end
 end

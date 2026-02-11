@@ -41,6 +41,8 @@
     <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* disease removes (?:him|she|it) from this world!!$" />
     <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* screams as the flames engulf (?:him|her|it)!!$" />
     <trigger enabled="y" regexp="y" sequence="80" script="DeathHandler" match="^.* is battered to death by the force of the water!$" />
+    <trigger enabled="y" match="^\{affon\}(\d+),.*$" regexp="y" script="AffOnHandler" sequence="100" />
+    <trigger enabled="y" match="^\{affoff\}(\d+)$" regexp="y" script="AffOffHandler" sequence="100" />
   </triggers>
 
   <aliases>
@@ -52,6 +54,7 @@
     <alias match="^acheal(?: +(?<cmd>.+))?$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acconsume$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
     <alias match="^acstab$" enabled="y" regexp="y" script="AliasHandler" sequence="20" />
+    <alias match="^acquick$" enabled="y" regexp="y" script="ToggleQuickstab" sequence="20" />
     <alias match="^acquaff(?: +(?<type>hp|mn|mv) +(?<pct>\d+) +(?<cnt>\d+))?$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
     <alias match="^acquaff$" enabled="y" regexp="y" script="QuaffHandler" sequence="20" />
     <alias match="caster debug" enabled="y" ignore_case="y" script="ToggleDebug" />
@@ -82,6 +85,8 @@
         can_backstab = true,
         backstab_pending = false, 
         global_pause_until = 0,
+        has_quickstab = false,
+        quickstab_id = 601,
         
         cfg = {
             primary      = GetVariable("primary") or "",
@@ -95,6 +100,7 @@
             consume      = (GetVariable("consume") or "0") == "1",
             quaff_on     = (GetVariable("quaff_on") or "0") == "1",
             stab_on      = (GetVariable("stab_on") or "1") == "1",
+            quick_on = (GetVariable("quick_on") or "1") == "1",
         },
 
         vitals = {
@@ -103,6 +109,21 @@
             mv = { pct = tonumber(GetVariable("mv_pct")) or 20, cnt = tonumber(GetVariable("mv_cnt")) or 2, item = "big move", key = "moves", max_key = "maxmoves", inv_type = "move" }
         }
     }
+
+    function ToggleQuickstab()
+        Caster.cfg.quick_on = not Caster.cfg.quick_on
+        SetVariable("quick_on", Caster.cfg.quick_on and "1" or "0")
+        
+        local status, color = Caster.cfg.quick_on and "ENABLED" or "DISABLED", Caster.cfg.quick_on and "lime" or "red"
+        
+        -- Per your requirement: if turned off, force flag to false immediately
+        if not Caster.cfg.quick_on then
+            Caster.has_quickstab = false
+        end
+        
+        Caster.log("Quickstab Spiral: " .. status, color)
+        SaveState()
+    end
 
     function parse_gmcp(path)
         local res, val = CallPlugin(GMCP_ID, "gmcpval", path)
@@ -153,30 +174,51 @@
     function DeathHandler(name, line, wildcards)
         if Caster.subclass:lower() == "ninja" and Caster.cfg.stab_on and Caster.is_fighting then
             if not Caster.backstab_pending then
-                Caster.backstab_pending = true
+                if debug_mode then Caster.log("Mob Dead: Resetting Backstab flags.", "lime") end
+                
+                -- Reset flags so do_cast knows it's allowed to stab
+                Caster.backstab_pending = false 
                 Caster.can_backstab = true
-                Execute("backstab")
-                if debug_mode then Caster.log("Mob Dead: Queuing Backstab.", "lime") end
+                
+                -- Call the central cast logic to handle Quickstab/Spiral/Skills
+                Caster.do_cast()
             else
                 if debug_mode then Caster.log("Mob Dead: Backstab already pending, skipping.", "orange") end
             end
         end
     end
 
-        function Caster.do_cast()
-        -- Check Hard Global Cooldown first
-        if os.clock() < Caster.global_pause_until then
-            return 
+    function AffOnHandler(name, line, wildcards)
+        local id = tonumber(wildcards[1])
+        if id == Caster.quickstab_id then
+            -- Only set true if the toggle is active
+            if Caster.cfg.quick_on then
+                Caster.has_quickstab = true
+                if debug_mode then Caster.log("Quickstab ON {affon}: Spiral Primed.", "cyan") end
+            else
+                Caster.has_quickstab = false
+                if debug_mode then Caster.log("Quickstab tag received, but ACQUICK is disabled.", "gray") end
+            end
         end
+    end
+
+    function AffOffHandler(name, line, wildcards)
+        local id = tonumber(wildcards[1])
+        if id == Caster.quickstab_id then
+            Caster.has_quickstab = false
+            if debug_mode then Caster.log("Quickstab OFF {affoff}: Spiral Disabled.", "orange") end
+        end
+    end
+
+    function Caster.do_cast()
+        -- Global Cooldown Check (Hard GCD)
+        if os.clock() < Caster.global_pause_until then return end
 
         if not Caster.enabled or not Caster.is_fighting or Caster.temp_disable then return end
         
-        -- Safety trigger for blocked casts
         if Caster.pause_cast and not Caster.quaff_override then
             Caster.blocked_casts = Caster.blocked_casts + 1
-            if Caster.blocked_casts >= 3 then
-                Caster.quaff_override = true
-            else return end
+            if Caster.blocked_casts >= 3 then Caster.quaff_override = true else return end
         end
 
         local skill = Caster.using_alt and Caster.cfg.alt or Caster.cfg.primary
@@ -184,7 +226,13 @@
         if Caster.subclass:lower() == "ninja" and Caster.cfg.stab_on and Caster.can_backstab then
             Caster.can_backstab = false
             Caster.backstab_pending = true
-            Execute(skill ~= "" and ("backstab;" .. skill) or "backstab")
+            
+            -- Build the Ninja command chain
+            local cmd = "backstab"
+            if Caster.has_quickstab then cmd = cmd .. ";spiral" end
+            if skill ~= "" then cmd = cmd .. ";" .. skill end
+            
+            Execute(cmd)
         elseif skill ~= "" then
             Execute(skill)
         end
@@ -325,94 +373,106 @@
         SaveState()
     end
 
-    function ShowStatus(name, line, wildcards)
-        Caster.update_subclass()
-        local function status_tag(b) return b and "[ ACTIVE ]" or "[ INACTIVE ]", b and "lime" or "red" end
-        local function val_tag(v) return v ~= "" and v or "Not Set", v ~= "" and "yellow" or "gray" end
-        ColourNote("silver", "", "======================================================================")
-        ColourTell("cyan", "", " [ CASTER SYSTEM v9.4 ]") 
-        local p, pc = status_tag(Caster.enabled)
-        ColourTell("silver", "", " Status: ") ColourNote(pc, "", p)
+function ShowStatus(name, line, wildcards)
+    Caster.update_subclass()
+    local function status_tag(b) return b and "[ ACTIVE ]" or "[ INACTIVE ]", b and "lime" or "red" end
+    local function val_tag(v) return v ~= "" and v or "Not Set", v ~= "" and "yellow" or "gray" end
+    
+    ColourNote("silver", "", "======================================================================")
+    ColourTell("cyan", "", " [ CASTER SYSTEM v9.5 ]") 
+    local p, pc = status_tag(Caster.enabled)
+    ColourTell("silver", "", " Status: ") ColourNote(pc, "", p)
+    
+    -- Aligned Top Section
+    ColourTell("silver", "", "    Class:          ") 
+    ColourTell("magenta", "", string.format("%-14s", Caster.subclass))
+    ColourNote("silver", "", "Recast Speed: " .. Caster.recast_speed .. "s")
+    
+    -- Ninja Only Section
+    if Caster.subclass:lower() == "ninja" then
+        ColourTell("silver", "", "    Backstab:       ")
+        local onoff, oncol = Caster.cfg.stab_on and "[ ENABLED ]" or "[ DISABLED ]", Caster.cfg.stab_on and "lime" or "red"
+        ColourTell(oncol, "", string.format("%-14s", onoff))
         
-        ColourTell("silver", "", "    Class Info:     ") 
-        ColourTell("magenta", "", string.format("%-14s", Caster.subclass))
-        ColourNote("silver", "", "Recast Speed: " .. Caster.recast_speed .. "s")
-        
-        ColourTell("silver", "", "    Backstab Mode:  ")
-        if Caster.subclass:lower() == "ninja" then
-            local onoff, oncol = Caster.cfg.stab_on and "[ ENABLED ]" or "[ DISABLED ]", Caster.cfg.stab_on and "lime" or "red"
-            ColourTell(oncol, "", onoff .. " ")
-            ColourTell("silver", "", "- Can Backstab ")
-            local bst, bsc = (Caster.can_backstab and "[ TRUE ]" or "[ FALSE ]"), (Caster.can_backstab and "lime" or "red")
-            ColourNote(bsc, "", bst)
-        else
-            ColourNote("gray", "", "[ Not Ninja ] - Backstab Disabled")
-        end
-        Note("")
+        ColourTell("silver", "", "Can Backstab: ")
+        local bst, bsc = (Caster.can_backstab and "[ TRUE ]" or "[ FALSE ]"), (Caster.can_backstab and "lime" or "red")
+        ColourNote(bsc, "", bst)
 
-        ColourNote("silver", "", " COMMANDS & TRIGGERS")
-        local p_val, p_col = val_tag(Caster.cfg.primary)
-        ColourTell("silver", "", "    Primary Loop:   ") ColourTell("cyan", "", string.format("%-12s", "   [" .. Caster.cfg.pri_trig .. "]")) 
-        ColourNote(p_col, "", " -> " .. p_val)
-        local a_val, a_col = val_tag(Caster.cfg.alt)
-        ColourTell("silver", "", "    Alternate Loop: ") ColourTell("orange", "", string.format("%-12s", "   [" .. Caster.cfg.alt_trig .. "]")) 
-        ColourNote(a_col, "", " -> " .. a_val)
-        Note("")
-        ColourNote("silver", "", " COMBAT SEQUENCE")
-        local op, opc = status_tag(Caster.cfg.opener_on)
-        ColourTell("silver", "", "    Opener:           ") ColourTell(opc, "", string.format("%-14s", op)) ColourNote("gray", "", "Cmd: " .. (Caster.cfg.opener ~= "" and Caster.cfg.opener or "None"))
-        local he, hec = status_tag(Caster.cfg.heal_on)
-        ColourTell("silver", "", "    Recovery:         ") ColourTell(hec, "", string.format("%-14s", he)) ColourNote("gray", "", "Cmd: " .. (Caster.cfg.heal ~= "" and Caster.cfg.heal or "None"))
-        local co, coc = status_tag(Caster.cfg.consume)
-        ColourTell("silver", "", "    Consume:          ") ColourNote(coc, "", co)
-        Note("")
-        ColourNote("silver", "", " VITAL MONITORING (AUTO-QUAFF)")
-        local qu, quc = status_tag(Caster.cfg.quaff_on)
-        ColourTell("silver", "", "    Power:            ") ColourNote(quc, "", qu)
-        ColourTell("silver", "", "    Thresholds:       ")
-        ColourTell("lime", "", "HP: " .. Caster.vitals.hp.pct .. "% (" .. Caster.vitals.hp.cnt .. "x)   ")
-        ColourTell("cyan", "", "MN: " .. Caster.vitals.mn.pct .. "% (" .. Caster.vitals.mn.cnt .. "x)   ")
-        ColourNote("orange", "", "MV: " .. Caster.vitals.mv.pct .. "% (" .. Caster.vitals.mv.cnt .. "x)")
-        ColourNote("silver", "", "======================================================================")
-    end
+        ColourTell("silver", "", "    Quickstab:      ")
+        local qon, qcol = Caster.cfg.quick_on and "[ ENABLED ]" or "[ DISABLED ]", Caster.cfg.quick_on and "lime" or "red"
+        ColourTell(qcol, "", string.format("%-14s", qon))
 
-    function ShowHelp(name, line, wildcards)
-        ColourNote("silver", "", "----------------------------------------------------------------------")
-        ColourNote("cyan", "", " [ AUTO-CASTER COMMAND REFERENCE ]")
-        Note("")
-        ColourTell("yellow", "", " ac <trig> <skill>    ") ColourNote("silver", "", "Set primary recast trigger and command.")
-        ColourTell("yellow", "", " ac none              ") ColourNote("silver", "", "Clear the primary loop settings.")
-        ColourTell("orange", "", " acalt <trig> <skill> ") ColourNote("silver", "", "Set fallback trigger/command for immunity.")
-        ColourTell("orange", "", " acalt none           ") ColourNote("silver", "", "Clear the alternate fallback loop.")
-        ColourTell("yellow", "", " ac                   ") ColourNote("silver", "", "Toggle main plugin power.")
-        Note("")
-        ColourTell("lime", "", " acopen <skill>       ") ColourNote("silver", "", "Toggle/Set skill fired at combat start.")
-        ColourTell("lime", "", " acheal <skill>       ") ColourNote("silver", "", "Toggle/Set skill fired at combat end.")
-        ColourTell("lime", "", " acconsume            ") ColourNote("silver", "", "Toggle post-combat 'consume' command.")
-        ColourTell("lime", "", " acstab               ") ColourNote("silver", "", "Toggle Ninja backstab functionality.")
-        Note("")
-        ColourTell("cyan", "", " acquaff <t> <%> <c>  ") ColourNote("silver", "", "Set vital type (hp|mn|mv), %, and repeat.")
-        ColourTell("cyan", "", " acquaff              ") ColourNote("silver", "", "Toggle the Auto-Quaff system.")
-        Note("")
-        ColourTell("white", "", " caster status        ") ColourNote("silver", "", "View current settings and vital levels.")
-        ColourTell("white", "", " caster help          ") ColourNote("silver", "", "Display this help menu.")
-        ColourTell("white", "", " caster debug         ") ColourNote("silver", "", "Toggle debug messaging.")
-        Note("")
-        ColourNote("silver", "", " EXAMPLES:")
-        Note("    ac fury cast 626                 - Matches 'Your fury'")
-        Note("    acquaff hp 40 3                  - Quaffs 3 heals when HP falls below 40%.")
-        Note("")
-        ColourNote("red", "", " Auto Quaff requires Durel's Inventory Plugin")
-        Note("")
-        ColourNote("silver", "", " LOGIC & SAFETY:")
-        Note(" 1. START: Fires Opener then leads with Backstab + Primary Skill.")
-        Note(" 2. RECAST: Fires ONLY when damage word (trig) is detected.")
-        Note(" 3. NINJA: Backstabs once at start, then every time a mob dies while fighting.")
-        Note(" 4. IMMUNITY: Swaps to Alt or shuts down if unaffected.")
-        Note(" 5. QUAFF: Checks stock via Aard_Inventory; stops for 3s per quaff.")
-        Note("")
-        ColourNote("silver", "", "----------------------------------------------------------------------")
+        ColourTell("silver", "", "Buff Active:  ")
+        local qst, qsc = (Caster.has_quickstab and "[ YES ]" or "[ NO ]"), (Caster.has_quickstab and "cyan" or "gray")
+        ColourNote(qsc, "", qst)
     end
+    Note("")
+
+    ColourNote("silver", "", " COMMANDS & TRIGGERS")
+    local p_val, p_col = val_tag(Caster.cfg.primary)
+    ColourTell("silver", "", "    Primary Loop:   ") ColourTell("cyan", "", string.format("%-12s", "   [" .. Caster.cfg.pri_trig .. "]")) 
+    ColourNote(p_col, "", " -> " .. p_val)
+    local a_val, a_col = val_tag(Caster.cfg.alt)
+    ColourTell("silver", "", "    Alternate Loop: ") ColourTell("orange", "", string.format("%-12s", "   [" .. Caster.cfg.alt_trig .. "]")) 
+    ColourNote(a_col, "", " -> " .. a_val)
+    Note("")
+    ColourNote("silver", "", " COMBAT SEQUENCE")
+    local op, opc = status_tag(Caster.cfg.opener_on)
+    ColourTell("silver", "", "    Opener:           ") ColourTell(opc, "", string.format("%-14s", op)) ColourNote("gray", "", "Cmd: " .. (Caster.cfg.opener ~= "" and Caster.cfg.opener or "None"))
+    local he, hec = status_tag(Caster.cfg.heal_on)
+    ColourTell("silver", "", "    Recovery:         ") ColourTell(hec, "", string.format("%-14s", he)) ColourNote("gray", "", "Cmd: " .. (Caster.cfg.heal ~= "" and Caster.cfg.heal or "None"))
+    local co, coc = status_tag(Caster.cfg.consume)
+    ColourTell("silver", "", "    Consume:          ") ColourNote(coc, "", co)
+    Note("")
+    ColourNote("silver", "", " VITAL MONITORING (AUTO-QUAFF)")
+    local qu, quc = status_tag(Caster.cfg.quaff_on)
+    ColourTell("silver", "", "    Power:            ") ColourNote(quc, "", qu)
+    ColourTell("silver", "", "    Thresholds:       ")
+    ColourTell("lime", "", "HP: " .. Caster.vitals.hp.pct .. "% (" .. Caster.vitals.hp.cnt .. "x)   ")
+    ColourTell("cyan", "", "MN: " .. Caster.vitals.mn.pct .. "% (" .. Caster.vitals.mn.cnt .. "x)   ")
+    ColourNote("orange", "", "MV: " .. Caster.vitals.mv.pct .. "% (" .. Caster.vitals.mv.cnt .. "x)")
+    ColourNote("silver", "", "======================================================================")
+end
+
+function ShowHelp(name, line, wildcards)
+    ColourNote("silver", "", "----------------------------------------------------------------------")
+    ColourNote("cyan", "", " [ AUTO-CASTER COMMAND REFERENCE v9.5 ]")
+    Note("")
+    ColourTell("yellow", "", " ac <trig> <skill>    ") ColourNote("silver", "", "Set primary recast trigger and command.")
+    ColourTell("yellow", "", " ac none               ") ColourNote("silver", "", "Clear the primary loop settings.")
+    ColourTell("orange", "", " acalt <trig> <skill> ") ColourNote("silver", "", "Set fallback trigger/command for immunity.")
+    ColourTell("orange", "", " acalt none           ") ColourNote("silver", "", "Clear the alternate fallback loop.")
+    ColourTell("yellow", "", " ac                   ") ColourNote("silver", "", "Toggle main plugin power.")
+    Note("")
+    ColourTell("lime", "", " acopen <skill>       ") ColourNote("silver", "", "Toggle/Set skill fired at combat start.")
+    ColourTell("lime", "", " acheal <skill>       ") ColourNote("silver", "", "Toggle/Set skill fired at combat end.")
+    ColourTell("lime", "", " acconsume            ") ColourNote("silver", "", "Toggle post-combat 'consume' command.")
+    ColourTell("lime", "", " acstab               ") ColourNote("silver", "", "Toggle Ninja backstab functionality.")
+    ColourTell("lime", "", " acquick              ") ColourNote("silver", "", "Toggle Quickstab (id 601) Spiral follow-up.")
+    Note("")
+    ColourTell("cyan", "", " acquaff <t> <%> <c>  ") ColourNote("silver", "", "Set vital type (hp|mn|mv), %, and repeat.")
+    ColourTell("cyan", "", " acquaff              ") ColourNote("silver", "", "Toggle the Auto-Quaff system.")
+    Note("")
+    ColourTell("white", "", " caster status         ") ColourNote("silver", "", "View current settings and vital levels.")
+    ColourTell("white", "", " caster help           ") ColourNote("silver", "", "Display this help menu.")
+    ColourTell("white", "", " caster debug          ") ColourNote("silver", "", "Toggle debug messaging.")
+    Note("")
+    ColourNote("silver", "", " EXAMPLES:")
+    Note("    ac fury cast 626                 - Matches 'Your fury'")
+    Note("    acquaff hp 40 3                  - Quaffs 3 heals when HP falls below 40%.")
+    Note("    acquick                          - Enables Spiral when weapon hand pulses.")
+    Note("")
+    ColourNote("red", "", " Auto Quaff requires Durel's Inventory Plugin")
+    Note("")
+    ColourNote("silver", "", " LOGIC & SAFETY:")
+    Note(" 1. START: Fires Opener then leads with Backstab + Primary Skill.")
+    Note(" 2. RECAST: Fires ONLY when damage word (trig) is detected.")
+    Note(" 3. NINJA: Fires Backstab on start/death. Adds Spiral if Quickstab active.")
+    Note(" 4. IMMUNITY: Swaps to Alt or shuts down if unaffected.")
+    Note(" 5. QUAFF: Checks stock via Aard_Inventory; locks commands for 3s.")
+    Note("")
+    ColourNote("silver", "", "----------------------------------------------------------------------")
+end
 
     function OnPluginBroadcast(msg, id, name, text)
         if id ~= GMCP_ID then return end
