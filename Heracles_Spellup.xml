@@ -30,8 +30,6 @@
   <trigger enabled="y" match="\{recon\}(\d+),(\d+)" regexp="y" script="OnRecOn" omit_from_output="y" sequence="100" />
   <trigger enabled="y" match="\{recoff\}(\d+)" regexp="y" script="OnRecOff" omit_from_output="y" sequence="100" />
   <trigger enabled="y" match="\{sfail\}(\d+),(\d+),(\d+),([\-\d]+)" regexp="y" script="OnSFail" omit_from_output="y" sequence="100" />
-  <trigger enabled="y" match="^Not while you are fighting\!$" regexp="y" script="HandleCombatError" sequence="10" />
-  <trigger enabled="y" match="^You can\'t concentrate enough to cast \'.*\'\.$" regexp="y" script="HandleCombatError" sequence="10" />
 </triggers>
 
 <aliases>
@@ -112,6 +110,7 @@ function OnItemWear(name, line, wildcards)
 end
 
 function CheckAuraFailSafe()
+    if not active then return end
     if eq_config.aura_id:lower() == "none" then return end
     
     local sanc_sn = FindSpell("sanctuary")
@@ -187,29 +186,25 @@ end
 function AttemptCast(sn, hook)
     if not active then return end
     UpdateState()
-    
     local d = spell_registry[sn]
     if not d or d.ignore then return end
-    
     if d.recovery_lock or d.current_rec then
         RobustDebug(hook, d.name, "BLOCKED", "Waiting for Recovery signal.")
         return 
     end
-
     if char_state ~= 3 and char_state ~= 8 then return end
-    
     if char_state == 8 then
-        if d.verified_combat then
-            RobustDebug("Combat", d.name, "Approved", "Whitelisted.")
-        elseif not d.non_combat then
-            RobustDebug("Combat", d.name, "Approved", "Discovery Attempt.")
-        else
-            return
-        end
+        if d.verified_combat then RobustDebug("Combat", d.name, "Approved", "Whitelisted.")
+        elseif not d.non_combat then RobustDebug("Combat", d.name, "Approved", "Discovery Attempt.")
+        else return end
     end
     
     local cmd = (d.type == 1) and ("cast " .. sn) or (skill_exceptions[d.name:lower()] or d.name:match("%S+"))
     last_sent_sn = sn
+    
+    -- CLEAR the flag. It only re-arms if OnSFail (reason 6) is triggered.
+    d.needs_recast = false 
+    
     if quiet then 
         RobustDebug(hook, d.name, "CAST", "Gagged outgoing command.")
         SendNoEcho(cmd) 
@@ -236,6 +231,7 @@ function OnAffOn(name, line, wildcards)
 end
 
 function OnAffOff(name, line, wildcards)
+
     local sn = wildcards[1]
     local d = spell_registry[sn]
     if d then 
@@ -255,44 +251,55 @@ function OnAffOff(name, line, wildcards)
 end
 
 function OnSFail(name, line, wildcards)
+    if not active then return end
     local sn, reason = wildcards[1], tonumber(wildcards[3])
     local d = spell_registry[sn]
     if not d then return end
 
-    if reason == 3 then 
-        -- Standard recovery lock (Skill/Spell not ready yet)
-        d.current_rec = wildcards[4]
-        d.recovery_lock = true
-        RobustDebug("SFail", d.name, "REC_ON", "Recovery timer active.")
-    elseif reason == 8 then
-        -- Access denied / Requirement not met: Stop recasting
+    -- Group 1: Recast immediately
+    if reason == 1 then
+        d.needs_recast = true
+        RobustDebug("SFail", d.name, "RECAST", "Reason 1: Immediate retry.")
+        AttemptCast(sn, "Immediate")
+
+    -- Group 2: Stop trying (2, 8, 9, 11)
+    elseif reason == 2 or reason == 8 or reason == 9 or reason == 11 then
         d.needs_recast = false
-        RobustDebug("SFail", d.name, "ABORT", "Reason 8: Stopping recast attempts.")
-    elseif reason == 6 then 
-        -- Concentration failure: Keep trying
-        d.needs_recast = true 
-        RobustDebug("SFail", d.name, "RECAST", "Concentration failed.")
+        if reason == 2 then d.is_active = true end
         
-        -- Sanctuary Fail-safe
-        if d.name:lower() == "sanctuary" and eq_config.current_worn:lower() == eq_config.float_name:lower() then
-            if eq_config.aura_id:lower() ~= "none" then
-                RobustDebug("SFail", d.name, "WEAR", "Failed Sanc in float. Equipping Aura.")
-                Execute("wear " .. eq_config.aura_id)
-            end
-        end
-    elseif reason == 2 then 
-        -- Already affected: Stop recasting and mark active
-        d.needs_recast = false 
-        d.is_active = true
-        
-        -- Sanctuary swap back to float if active
-        if d.name:lower() == "sanctuary" and eq_config.current_worn:lower() == eq_config.aura_name:lower() then
+        -- Restore Sanctuary swap back to float if active
+        if d.name:lower() == "sanctuary" and reason == 2 and 
+           eq_config.current_worn:lower() == eq_config.aura_name:lower() then
              if eq_config.float_id:lower() ~= "none" then
                  RobustDebug("SFail", d.name, "SWAP", "Sanc active. Swapping to float.")
                  Execute("wear " .. eq_config.float_id)
              end
         end
+        RobustDebug("SFail", d.name, "ABORT", "Reason " .. reason .. ": Stopping.")
+
+    -- Group 3: Wait for Recoff to recast
+    elseif reason == 3 then
+        d.current_rec = wildcards[4]
+        d.recovery_lock = true
+        d.needs_recast = true
+        RobustDebug("SFail", d.name, "REC_ON", "Reason 3: Waiting for RecOff.")
+
+    -- Group 4: Queue for recast (4, 5, 6, 10, 12)
+    elseif reason == 4 or reason == 5 or reason == 6 or reason == 10 or reason == 12 then
+        d.needs_recast = true
+        
+        -- Restore Sanctuary Fail-safe for concentration/fighting failures
+        if (reason == 6 or reason == 1) and d.name:lower() == "sanctuary" and 
+            eq_config.current_worn:lower() == eq_config.float_name:lower() then
+            if eq_config.aura_id:lower() ~= "none" then
+                RobustDebug("SFail", d.name, "WEAR", "Failed Sanc in float. Equipping Aura.")
+                Execute("wear " .. eq_config.aura_id)
+            end
+        end
+        
+        RobustDebug("SFail", d.name, "QUEUED", "Reason " .. reason .. ": Flagged for recast.")
     end
+    SaveData()
 end
 
 -------------------------------------------------------------------------------
@@ -300,6 +307,7 @@ end
 -------------------------------------------------------------------------------
 
 function UpdateState()
+    if not active then return end
     local res, gmcparg = CallPlugin("3e7dedbe37e44942dd46d264", "gmcpval", "char.status")
     if res == 0 and gmcparg and gmcparg ~= "" then
         local s = string.match(gmcparg, 'state%s*=%s*["\']?(%d+)["\']?')
@@ -309,15 +317,21 @@ function UpdateState()
                 local old_state = char_state
                 char_state = ns
                 
+                -- Sanctuary fail-safe if entering combat
                 if char_state == 8 then
                     CheckAuraFailSafe()
                 end
 
-                if char_state == 3 and old_state == 8 then
-                    if eq_config.float_id:lower() ~= "none" and eq_config.current_worn:lower() == eq_config.aura_name:lower() then
+                -- Trigger queue if we just stood up from ANY other state (Sleep, Combat, Rest)
+                if char_state == 3 then
+                    -- Swap back to float if we were using the aura in combat
+                    if old_state == 8 and eq_config.float_id:lower() ~= "none" and 
+                       eq_config.current_worn:lower() == eq_config.aura_name:lower() then
                         Execute("wear " .. eq_config.float_id)
                     end
-                    ProcessPending() 
+                    
+                    RobustDebug("State", "Standing", "SYNC", "State changed to 3. Processing queue.")
+                    ProcessPending()
                 end 
             end 
         end
@@ -425,7 +439,16 @@ function OnRecOff(name, line, wildcards)
             d.current_rec = nil
             d.recovery_lock = false
             RobustDebug("RecOff", d.name, "READY", "Recovery cleared.")
-            if d.needs_recast then AttemptCast(sn, "RecOff") end 
+            
+            if d.needs_recast then 
+                if char_state == 3 then
+                    -- Cast immediately only if standing
+                    AttemptCast(sn, "RecOff") 
+                else
+                    -- Otherwise, it remains flagged for the state-change queue
+                    RobustDebug("RecOff", d.name, "QUEUED", "Waiting for State 3 to recast.")
+                end
+            end 
         end 
     end
 end
@@ -503,16 +526,6 @@ function HandleNoAuto(name, line, wildcards)
     end
 end
 
-function HandleCombatError()
-    if char_state == 8 and last_sent_sn and spell_registry[last_sent_sn] then
-        local d = spell_registry[last_sent_sn]
-        if not d.verified_combat then
-            d.non_combat = true
-            SaveData()
-        end
-        last_sent_sn = nil
-    end
-end
 ]]>
 </script>
 </muclient>

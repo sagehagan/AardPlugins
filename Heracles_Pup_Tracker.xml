@@ -48,9 +48,9 @@
 
   <trigger enabled="y" regexp="y" match="^You share ([\d,]+) gold coins with .*? member.*? Your share is ([\d,]+) gold\.$" script="TrgGoldSubtract" sequence="5" />
   <trigger enabled="y" regexp="y" match="^You receive (\d+)(?:\+(\d+))?(?:\+(\d+))? experience points?\.$" name="trgMobExp" script="TrgExp" sequence="100" />
-  <trigger
+<trigger
   enabled="y"
-  match="^You fence .* for ([\d,]+) gold\.$"
+  match="^You fenced \d+ items? for ([\d,]+) gold\.$"
   regexp="y"
   script="Trigger_FenceGold"
   sequence="100"
@@ -64,6 +64,7 @@ require "serialize"
 local history, today_times, daily_archive = {}, {}, {}
 local rep_chan, log_tab, t_date = "print", "", ""
 local t_trains, t_pups, t_gold = 0, 0, 0
+local timer_count = 0
 
 -- Initializing all gold sources
 local g_corpse, g_crumble, g_split, g_sac, g_sell, g_haggle, g_fence = 0, 0, 0, 0, 0, 0, 0
@@ -109,10 +110,11 @@ function GetLine(label, pups, trains, gold, avg)
            label, Pad(CommaValue(pups), 6), Pad(CommaValue(trains), 6), Pad(FormatGold(gold), 7), FormatSeconds(avg or 0))
 end
 
--- TRACKING LOGIC & DEBUG
 function ToggleDebug()
     debug_mode = not debug_mode
+    SetVariable("debug_mode", debug_mode and "y" or "n") -- Added for persistence
     AnsiNote("@R[ @WHeracles @R] @DDebug Mode: " .. (debug_mode and "@GENABLED" or "@RDISABLED"))
+    SaveState()
 end
 
 function DebugMsg(msg)
@@ -161,11 +163,10 @@ function TrgGoldHaggle(name, line, w)
     AdjustGold(amt)
 end
 
--- New Fence Gold Trigger Logic
 function Trigger_FenceGold(name, line, wildcards)
     local amt = tonumber((wildcards[1]:gsub(",", ""))) or 0
     g_fence = g_fence + amt
-    DebugMsg(string.format("@GADDING FENCE: @W%s @D(Source: %s)", CommaValue(amt), line))
+    DebugMsg(string.format("@GADDING FENCE (SUMMARY): @W%s @D(Source: %s)", CommaValue(amt), line))
     AdjustGold(amt)
 end
 
@@ -200,10 +201,25 @@ end
 
 function GetFullSet()
     local full = {}
-    for _,v in ipairs(daily_archive) do table.insert(full, v) end
+    -- Calculate Today's average
     local sTime = 0; for _,v in ipairs(today_times) do sTime = sTime + v end
     local avgToday = (#today_times > 0) and (sTime / #today_times) or 0
-    table.insert(full, { date = t_date, pups = t_pups, trains = t_trains, gold = t_gold, avg = avgToday, time_count = #today_times })
+    
+    -- Put TODAY first in the temporary 'full' table
+    table.insert(full, { 
+        date = t_date, 
+        pups = t_pups, 
+        trains = t_trains, 
+        gold = t_gold, 
+        avg = avgToday, 
+        time_count = #today_times 
+    })
+    
+    -- Append the archive (which is already newest-to-oldest)
+    for _, v in ipairs(daily_archive) do 
+        table.insert(full, v) 
+    end
+    
     return full
 end
 
@@ -239,12 +255,18 @@ function ShowGoldSummary()
 end
 
 function ShowDailyHistory(name, line, wildcards)
-    local full = GetFullSet(); local count = math.min(tonumber(wildcards[1]), #full)
+    local full = GetFullSet()
+    local requested = tonumber(wildcards[1]) or 10
+    local count = math.min(requested, #full)
+    
     PrintHeader("DAILY BREAKDOWN (LAST " .. count .. " DAYS)")
-    for i = #full, #full - count + 1, -1 do
+    
+    -- Loop forward: 1 is Today, 2 is Yesterday, etc.
+    for i = 1, count do
         local d = full[i]
         AnsiNote(GetLine(d.date, d.pups, d.trains, d.gold, d.avg))
     end
+    
     AnsiNote("@R" .. string.rep("-", 80))
 end
 
@@ -346,10 +368,6 @@ function OutputMessage(msg)
     if log_tab ~= "" then CallPlugin("b555825a4a5700c35fa80780", "storeFromOutside", msg, log_tab) end
 end
 
-local timer_count = 0
-
--- Updated Pulse (EST Rollover + 5 Minute Report)
-local timer_count = 0
 function TmrPulse()
     if not initialized then return end
     
@@ -358,19 +376,28 @@ function TmrPulse()
     
     -- 1. EST Date Rollover logic
     if t_date ~= current_server_date then
-        if debug_mode then AnsiNote("@D[Debug] EST Rollover detected. Archiving " .. t_date) end
+        DebugMsg("@WDate change detected: @R" .. t_date .. " @D-> @G" .. current_server_date)
 
+        -- Archive the data from the day that just ended
         if t_pups > 0 or t_trains > 0 then
             local s = 0
             for _, v in ipairs(today_times) do s = s + v end
             local avg = (#today_times > 0) and (s / #today_times) or 0
             
+            -- Insert at position 1 (Newest)
             table.insert(daily_archive, 1, {
-                date = t_date, pups = t_pups, trains = t_trains, gold = t_gold, avg = math.floor(avg)
+                date = t_date, 
+                pups = t_pups, 
+                trains = t_trains, 
+                gold = t_gold, 
+                avg = math.floor(avg),
+                time_count = #today_times
             })
-            while #daily_archive > 10 do table.remove(daily_archive) end
+            while #daily_archive > 20 do table.remove(daily_archive) end -- Keep 20 days
+            DebugMsg("@GArchived previous day successfully.")
         end
         
+        -- Reset for the new day
         t_date = current_server_date
         t_pups, t_trains, t_gold = 0, 0, 0
         g_corpse, g_crumble, g_split, g_sac, g_sell, g_haggle, g_fence = 0, 0, 0, 0, 0, 0, 0
@@ -381,12 +408,9 @@ function TmrPulse()
     -- 2. 5-Minute Report Logic
     if timer_count >= 300 then
         if report_active then
-            if debug_mode then AnsiNote("@D[Debug] 5-minute report interval reached.") end
-            -- Assuming your report function is named DoFiveMinuteReport
-            DoFiveMinuteReport() 
+            ExecuteReport() 
         end
         timer_count = 0
-        SaveState()
     end
 end
 
@@ -419,28 +443,19 @@ end
 function tracker_settings(n,l,w) rep_chan = w[1]; SetVariable("repchan", rep_chan); AnsiNote("@R[ @WHeracles @R] @DOutput Channel: @W"..rep_chan) end
 function tracker_log_settings(n,l,w) log_tab = w[1]=="off" and "" or w[1]; SetVariable("log_tab", log_tab); AnsiNote("@R[ @WHeracles @R] @DLogging to Tab: @W"..(log_tab=="" and "OFF" or log_tab)) end
 
--- Updated Install (Loads variables and sets EST)
 function OnPluginInstall()
-    t_date = os.date("!%d %b %Y", os.time() - 18000) -- Current EST
+    -- Standard initialization
+    t_date = GetServerDate()
     
+    -- Load variables
     t_trains = tonumber(GetVariable("today_trains")) or 0
     t_pups = tonumber(GetVariable("today_pups")) or 0
     t_gold = tonumber(GetVariable("today_gold")) or 0
-    
-    -- Load Gold Sources
-    g_corpse = tonumber(GetVariable("g_corpse")) or 0
-    g_crumble = tonumber(GetVariable("g_crumble")) or 0
-    g_split = tonumber(GetVariable("g_split")) or 0
-    g_sac = tonumber(GetVariable("g_sac")) or 0
-    g_sell = tonumber(GetVariable("g_sell")) or 0
-    g_haggle = tonumber(GetVariable("g_haggle")) or 0
-    g_fence = tonumber(GetVariable("g_fence")) or 0
-
     rep_chan = GetVariable("repchan") or "print"
     log_tab = GetVariable("log_tab") or ""
     debug_mode = (GetVariable("debug_mode") == "y")
     
-    -- Safety helper for table loading
+    -- Load tables
     local function SafeLoad(var)
         local data = GetVariable(var)
         if data and data ~= "" then
@@ -457,7 +472,8 @@ function OnPluginInstall()
     last_pup_time = GetInfo(304)
     initialized = true
 
-    AnsiNote("@R[ @WHeracles @R] @DPup Tracker Loaded. Type @Cpt help @Dfor commands")
+    -- Professional single-line load message
+    AnsiNote("@R[ @WHeracles @R] @DPup Tracker @Gv15.4 @DLoaded. Type @Cpt help @Dfor status and commands.")
 end
 
 -- Updated SaveState
