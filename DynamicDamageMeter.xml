@@ -55,11 +55,12 @@
 <script>
 <![CDATA[
 local AllTimeDamage = {}
-local HitTracking = {} 
+local HitTracking = {}
+local MaxHitTracking = {}
 local GroupDamage = {}
 local valid_group_members = {}
 local my_name = GetVariable("my_name") or "Heracles"
-local meter_active = false 
+local meter_active = true 
 local debug_active = false
 local total_combat_time = 0
 local os_start = 0
@@ -81,7 +82,18 @@ local melee_types = {
 
 function OnPluginInstall() 
     reflecting = false
-    ColourNote("cyan", "", ">>> ", "white", "", "Dynamic Damage Tracking 7.1 Loaded. Use ", "yellow", "", "dmg help", "white", "", " for commands.")
+    EnableTriggerGroup("dmg_triggers", meter_active)
+    -- Professional single-line status on load
+    ColourNote("red", "", ">>> ", "white", "", "Dynamic Damage Tracking 7.1: ", 
+        meter_active and "yellow" or "red", "", meter_active and "ACTIVE" or "INACTIVE", 
+        "white", "", " | Debug: ", debug_active and "yellow" or "red", "", debug_active and "ON" or "OFF",
+        "white", "", " | ", "yellow", "", "dmg help", "white", "", " for commands.")
+end
+
+function toggle_debug()
+    debug_active = not debug_active
+    SetVariable("debug_active", debug_active and "1" or "0") -- Persistence
+    ColourNote("red", "", " >>> ", "white", "", "Debug Messaging: ", debug_active and "yellow" or "red", "", debug_active and "ENABLED" or "DISABLED")
 end
 
 function debug_msg(msg)
@@ -116,14 +128,9 @@ function toggle_meter()
     ColourNote("red", "", " >>> ", "white", "", "Damage Meter: ", meter_active and "green" or "red", "", meter_active and "ENABLED" or "DISABLED")
 end
 
-function toggle_debug()
-    debug_active = not debug_active
-    ColourNote("red", "", " >>> ", "white", "", "Debug Messaging: ", debug_active and "green" or "red", "", debug_active and "ENABLED" or "DISABLED")
-end
-
 function DamageStats()
-    AllTimeDamage = {}; GroupDamage = {}; HitTracking = {}; total_combat_time = 0; os_start = 0; reflecting = false
-    Note(">>> Damage Meter and Hit Tracking Reset.")
+    AllTimeDamage = {}; GroupDamage = {}; HitTracking = {}; MaxHitTracking = {}; total_combat_time = 0; os_start = 0; reflecting = false
+    Note(">>> Damage Meter, Hit Tracking, and Max Hits Reset.")
 end
 
 function prepare_reflection(name, line, wildcards) 
@@ -157,12 +164,18 @@ function dynamic_tracking(name, line, wildcards)
         AllTimeDamage[key] = (AllTimeDamage[key] or 0) + dmg
         GroupDamage[my_name] = (GroupDamage[my_name] or 0) + dmg
         
+        if not reflecting then
+            if not MaxHitTracking[ability_name] or dmg > MaxHitTracking[ability_name] then
+                MaxHitTracking[ability_name] = dmg
+            end
+        end
+
         if not HitTracking[key] then HitTracking[key] = { hits = 0, instances = 0, total_dmg = 0 } end
         HitTracking[key].hits = HitTracking[key].hits + hits
         HitTracking[key].instances = HitTracking[key].instances + 1
         HitTracking[key].total_dmg = HitTracking[key].total_dmg + dmg
         
-        debug_msg(string.format("Recorded Personal: %s | Dmg: %s | Hits: %d | Reflected: %s", ability_name, commas(dmg), hits, tostring(reflecting)))
+        debug_msg(string.format("Recorded Personal: %s | Dmg: %s | Max: %s", ability_name, commas(dmg), commas(MaxHitTracking[ability_name] or 0)))
     end
     reflecting = false
 end
@@ -184,40 +197,74 @@ function full_breakdown()
     for _, v in pairs(AllTimeDamage) do total = total + v end
     if total == 0 then return Note("No damage recorded.") end
     
-    local melee, spells, reflect = {}, {}, {}
+    local melee, spells = {}, {}
+    local total_reflect = 0 
+    
     for k, v in pairs(AllTimeDamage) do
-        if k:find("^Reflected:") then table.insert(reflect, {n=k:gsub("Reflected: ", ""), v=v})
-        elseif melee_types[k:lower()] then table.insert(melee, {n=k, v=v})
-        else table.insert(spells, {n=k, v=v}) end
+        if k:find("^Reflected:") then 
+            total_reflect = total_reflect + v
+        elseif melee_types[k:lower()] then 
+            table.insert(melee, {n=k, v=v})
+        else 
+            table.insert(spells, {n=k, v=v}) 
+        end
     end
     
     local function sort_v(a,b) return a.v > b.v end
-    table.sort(melee, sort_v); table.sort(spells, sort_v); table.sort(reflect, sort_v)
+    table.sort(melee, sort_v); table.sort(spells, sort_v)
 
     local active_time = total_combat_time
     if curr_state == "8" and os_start > 0 then active_time = active_time + (os.time() - os_start) end
     local dps = math.floor(total / (active_time > 0 and active_time or 1))
 
     Note("")
-    ColourNote("yellow", "", "--- Full Personal Breakdown (Detailed) ---")
+    -- Separators: Red
+    ColourNote("red", "", "--------------------------------------------------------------------------------")
+    ColourNote("white", "", "                        FULL PERSONAL DAMAGE BREAKDOWN")
+    ColourNote("red", "", "--------------------------------------------------------------------------------")
     
     local function display_section(list, label)
         if #list > 0 then
-            ColourNote("cyan", "", label)
+            Note("")
+            ColourNote("white", "", "  " .. label)
             for _, d in ipairs(list) do
-                ColourNote("white", "", string.format("  %-23s: %15s [%d%%]", truncate(d.n, 23), commas(d.v), round((d.v/total)*100)))
+                local max_val = MaxHitTracking[d.n] and commas(MaxHitTracking[d.n]) or "0"
+                
+                -- Pup Style Logic:
+                -- Source/Labels (DarkGray) : Total (White) [Percent] (DimGray) Max (Yellow)
+                ColourNote("white", "", "  ", 
+                           "dimgray", "", string.format("%-20s: ", truncate(d.n, 20)),
+                           "white", "", string.format("%14s ", commas(d.v)),
+                           "red", "", "[",
+                           "darkgray", "", string.format("%2d%%", round((d.v/total)*100)),
+                           "red", "", "]",
+                           "dimgray", "", " Max Hit: ",
+                           "yellow", "", max_val)
             end
         end
     end
 
     display_section(melee, "Melee Sources")
     display_section(spells, "Ability/Spell Sources")
-    display_section(reflect, "Reflected Sources")
+    
+    if total_reflect > 0 then
+        Note("")
+        ColourNote("white", "", "  Reflected Sources")
+        ColourNote("white", "", "  ", 
+                   "dimgray", "", string.format("%-20s: ", "Total Reflections"),
+                   "white", "", string.format("%14s ", commas(total_reflect)),
+                   "dimgray", "", "[",
+                   "dimgray", "", string.format("%3d%%", round((total_reflect/total)*100)),
+                   "dimgray", "", "]")
+    end
     
     Note("")
-    ColourNote("yellow", "", "Total Damage: " .. commas(total))
-    ColourNote("yellow", "", "Combat Time : " .. active_time .. "s")
-    ColourNote("yellow", "", "Average DPS : " .. commas(dps))
+    ColourNote("white", "", "  ", "red", "", "---------------------------------------------")
+    -- Critical Summary Stats: Yellow
+    ColourNote("white", "", "  Total Damage   : ", "yellow", "", commas(total))
+    ColourNote("white", "", "  Combat Time    : ", "yellow", "", active_time .. "s")
+    ColourNote("white", "", "  Average DPS    : ", "yellow", "", commas(dps))
+    ColourNote("red", "", "--------------------------------------------------------------------------------")
     Note("")
 end
 
@@ -227,6 +274,7 @@ function hit_breakdown(name, line, wildcards)
     local reflect_hits, reflect_inst, reflect_dmg = 0, 0, 0
     local spells = {}
 
+    -- Aggregate data for melee and reflections, and collect individual spells
     for k, v in pairs(HitTracking) do
         if k:find("^Reflected:") then
             reflect_hits = reflect_hits + v.hits
@@ -237,41 +285,66 @@ function hit_breakdown(name, line, wildcards)
             melee_inst = melee_inst + v.instances
             melee_dmg = melee_dmg + v.total_dmg
         else
-            table.insert(spells, {n=k, avg_h=v.hits/v.instances, avg_d=v.total_dmg/v.hits, total_h=v.hits})
+            table.insert(spells, {
+                n = k, 
+                avg_h = v.hits / v.instances, 
+                avg_d = v.total_dmg / v.hits, 
+                total_h = v.hits
+            })
         end
     end
 
+    -- Sort individual spells by total hits
     table.sort(spells, function(a,b) return a.total_h > b.total_h end)
 
     if rep_arg == "" then
         Note("")
-        ColourNote("yellow", "", "--- Personal Hit Tracking Breakdown ---")
-        ColourNote("darkgray", "", "  Ability                   Avg Hits/Swing    Avg Dmg/Hit")
+        -- Header Match
+        ColourNote("red", "", "--------------------------------------------------------------------------------")
+        ColourNote("white", "", "                        PERSONAL HIT TRACKING BREAKDOWN")
+        ColourNote("red", "", "--------------------------------------------------------------------------------")
         
+        local function display_hit_line(label, avg_hits, avg_dmg)
+            ColourNote("white", "", "  ", 
+                       "dimgray", "", string.format("%-20s: ", truncate(label, 20)),
+                       "white", "", string.format("%4.1f ", avg_hits),
+                       "darkgray", "", "hits/proc",
+                       "dimgray", "", "  Avg Dmg: ",
+                       "yellow", "", commas(avg_dmg))
+        end
+
         if melee_inst > 0 then
-            ColourNote("cyan", "", "Melee Hits (Bucket)")
-            ColourNote("white", "", string.format("  %-23s: %10.1f %18s", "Total Melee", melee_hits/melee_inst, commas(melee_dmg/melee_hits)))
+            Note("")
+            ColourNote("white", "", "  Melee Bucket")
+            display_hit_line("Total Melee", melee_hits / melee_inst, melee_dmg / melee_hits)
         end
 
         if #spells > 0 then
-            ColourNote("cyan", "", "Ability/Spell Hits (Individual)")
+            Note("")
+            ColourNote("white", "", "  Individual Abilities")
             for _, d in ipairs(spells) do
-                ColourNote("white", "", string.format("  %-23s: %10.1f %18s", truncate(d.n, 23), d.avg_h, commas(d.avg_d)))
+                display_hit_line(d.n, d.avg_h, d.avg_d)
             end
         end
         
         if reflect_inst > 0 then
-            ColourNote("cyan", "", "Reflect Hits (Bucket)")
-            ColourNote("white", "", string.format("  %-23s: %10.1f %18s", "Total Reflections", reflect_hits/reflect_inst, commas(reflect_dmg/reflect_hits)))
+            Note("")
+            ColourNote("white", "", "  Reflected Sources")
+            display_hit_line("Total Reflections", reflect_hits / reflect_inst, reflect_dmg / reflect_hits)
         end
+
+        Note("")
+        ColourNote("red", "", "--------------------------------------------------------------------------------")
         Note("")
     else
+        -- Logic for reporting to channel remains functional
         local out = {}
-        if melee_inst > 0 then table.insert(out, string.format("@DMelee: @wAvgHits: %.1f @wAvgDmg: %s", melee_hits/melee_inst, commas(melee_dmg/melee_hits))) end
+        if melee_inst > 0 then 
+            table.insert(out, string.format("@DMelee: @wAvgHits: %.1f @wAvgDmg: %s", melee_hits/melee_inst, commas(melee_dmg/melee_hits))) 
+        end
         for _, d in ipairs(spells) do
             table.insert(out, string.format("@D%s: @wAvgHits: %.1f @wAvgDmg: %s", d.n, d.avg_h, commas(d.avg_d)))
         end
-        if reflect_inst > 0 then table.insert(out, string.format("@DReflect: @wAvgHits: %.1f @wAvgDmg: %s", reflect_hits/reflect_inst, commas(reflect_dmg/reflect_hits))) end
         Send(rep_arg .. " @R[@DHit Report@R] " .. table.concat(out, " | "))
     end
 end

@@ -135,13 +135,6 @@ function TrgGoldCorpse(name, line, w)
     AdjustGold(amt)
 end
 
-function TrgGoldSplit(name, line, w)
-    local amt = tonumber((string.gsub(w[1], ",", ""))) or 0
-    g_split = g_split + amt
-    DebugMsg(string.format("@GADDING SPLIT: @W%s @D(Source: %s)", CommaValue(amt), line))
-    AdjustGold(amt)
-end
-
 function TrgGoldSac(name, line, w)
     local amt = tonumber((string.gsub(w[1], ",", ""))) or 0
     g_sac = g_sac + amt
@@ -170,12 +163,25 @@ function Trigger_FenceGold(name, line, wildcards)
     AdjustGold(amt)
 end
 
+-- When someone else shares gold WITH you
+function TrgGoldSplit(name, line, w)
+    local amt = tonumber((string.gsub(w[1], ",", ""))) or 0
+    g_split = g_split + amt -- Positive: You received this
+    DebugMsg(string.format("@GRECEIVED SPLIT: @W%s", CommaValue(amt)))
+    AdjustGold(amt)
+end
+
+-- When you share gold with THE GROUP
 function TrgGoldSubtract(name, line, w)
     local total_shared = tonumber((string.gsub(w[1], ",", ""))) or 0
     local my_share = tonumber((string.gsub(w[2], ",", ""))) or 0
     local deduction = total_shared - my_share
-    g_split = g_split - deduction
-    DebugMsg(string.format("@RSUBTRACTING: @W%s @D(Total: %s, Kept: %s)", CommaValue(deduction), CommaValue(total_shared), CommaValue(my_share)))
+    
+    g_split = g_split - deduction -- Negative: You gave this away
+    DebugMsg(string.format("@RSUBTRACTING SPLIT: @W%s", CommaValue(deduction)))
+    
+    -- Note: We only AdjustGold here if the "Get Gold" trigger already 
+    -- added the FULL amount from the corpse.
     AdjustGold(-deduction)
 end
 
@@ -444,18 +450,29 @@ function tracker_settings(n,l,w) rep_chan = w[1]; SetVariable("repchan", rep_cha
 function tracker_log_settings(n,l,w) log_tab = w[1]=="off" and "" or w[1]; SetVariable("log_tab", log_tab); AnsiNote("@R[ @WHeracles @R] @DLogging to Tab: @W"..(log_tab=="" and "OFF" or log_tab)) end
 
 function OnPluginInstall()
-    -- Standard initialization
+    -- Current EST Date
     t_date = GetServerDate()
     
-    -- Load variables
+    -- Load Core Totals
     t_trains = tonumber(GetVariable("today_trains")) or 0
     t_pups = tonumber(GetVariable("today_pups")) or 0
     t_gold = tonumber(GetVariable("today_gold")) or 0
+    
+    -- Load Specific Gold Sources (The missing logic)
+    g_corpse = tonumber(GetVariable("g_corpse")) or 0
+    g_crumble = tonumber(GetVariable("g_crumble")) or 0
+    g_split = tonumber(GetVariable("g_split")) or 0
+    g_sac = tonumber(GetVariable("g_sac")) or 0
+    g_sell = tonumber(GetVariable("g_sell")) or 0
+    g_haggle = tonumber(GetVariable("g_haggle")) or 0
+    g_fence = tonumber(GetVariable("g_fence")) or 0
+
+    -- Load Settings
     rep_chan = GetVariable("repchan") or "print"
     log_tab = GetVariable("log_tab") or ""
     debug_mode = (GetVariable("debug_mode") == "y")
     
-    -- Load tables
+    -- Table Loading
     local function SafeLoad(var)
         local data = GetVariable(var)
         if data and data ~= "" then
@@ -476,21 +493,24 @@ function OnPluginInstall()
     AnsiNote("@R[ @WHeracles @R] @DPup Tracker @Gv15.4 @DLoaded. Type @Cpt help @Dfor status and commands.")
 end
 
--- Updated SaveState
 function OnPluginSaveState()
     SetVariable("today_trains", t_trains)
     SetVariable("today_pups", t_pups)
     SetVariable("today_gold", t_gold)
+    
+    -- Save Specific Gold Sources
     SetVariable("g_corpse", g_corpse)
     SetVariable("g_crumble", g_crumble)
     SetVariable("g_split", g_split)
     SetVariable("g_sac", g_sac)
     SetVariable("g_sell", g_sell)
     SetVariable("g_haggle", g_haggle)
-    SetVariable("g_fence", g_fence) -- Added Fence
+    SetVariable("g_fence", g_fence)
+    
     SetVariable("repchan", rep_chan)
     SetVariable("log_tab", log_tab)
     SetVariable("debug_mode", debug_mode and "y" or "n")
+    
     SetVariable("daily_archive", "return " .. serialize.save_simple(daily_archive))
     SetVariable("today_times_table", "return " .. serialize.save_simple(today_times))
     SetVariable("history_table", "return " .. serialize.save_simple(history))
