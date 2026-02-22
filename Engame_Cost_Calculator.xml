@@ -9,7 +9,7 @@
    purpose="Calculate Costs for Instinct/Mastery/Potential"
    save_state="y"
    date_written="2026-01-20"
-   version="4.3"
+   version="5.4"
    >
 </plugin>
 
@@ -24,11 +24,29 @@
   >
   </alias>
   <alias
-   match="^calc help$"
+   match="^calc pups (\d+) (\d+)$"
    enabled="y"
    regexp="y"
    send_to="12"
    sequence="101"
+   script="set_pup_costs"
+  >
+  </alias>
+  <alias
+   match="^calc debug$"
+   enabled="y"
+   regexp="y"
+   send_to="12"
+   sequence="102"
+   script="toggle_debug"
+  >
+  </alias>
+  <alias
+   match="^calc help$"
+   enabled="y"
+   regexp="y"
+   send_to="12"
+   sequence="103"
    script="show_help"
   >
   </alias>
@@ -38,88 +56,54 @@
 <![CDATA[
 
 local GMCP_HANDLER = "3e7dedbe37e44942dd46d264"
+local BOX_WIDTH = 46
+
+-- Load persistent variables
+local pup_trains = tonumber(GetVariable("pup_trains")) or 5
+local pup_gold = tonumber(GetVariable("pup_gold")) or 33500
+local debug_enabled = (GetVariable("debug_enabled") == "1")
 
 -- ============================================================================
--- INTERNAL COLOR & ALIGNMENT HELPERS
+-- UI & ALIGNMENT ENGINE
 -- ============================================================================
 local function col(str)
     local codes = {
         ["@w"] = "\27[0m", ["@W"] = "\27[1;37m", ["@G"] = "\27[1;32m",
         ["@Y"] = "\27[1;33m", ["@C"] = "\27[1;36m", ["@R"] = "\27[1;31m",
+        ["@D"] = "\27[1;30m",
     }
     return (str:gsub("@.", codes))
 end
 
-local function pad_line(text)
-    local visible_len = string.len(text:gsub("@.", ""))
-    local padding = 50 - visible_len
-    if padding < 0 then padding = 0 end
-    return text .. string.rep(" ", padding)
+local function strip_codes(str)
+    return str:gsub("@.", "")
+end
+
+local function print_header(title)
+    local visible_title = strip_codes(title)
+    local padding = BOX_WIDTH - 4 - #visible_title
+    local left_pad = math.floor(padding / 2)
+    local right_pad = padding - left_pad
+    AnsiNote(col("@D| " .. string.rep(" ", left_pad) .. title .. string.rep(" ", right_pad) .. " @D|@w"))
+end
+
+local function print_line(label, value)
+    local visible_label = strip_codes(label)
+    local visible_value = strip_codes(value)
+    local padding = BOX_WIDTH - 4 - #visible_label - #visible_value
+    if padding < 0 then padding = 1 end
+    AnsiNote(col("@D| " .. label .. string.rep(" ", padding) .. value .. " @D|@w"))
+end
+
+local function debug_msg(msg)
+    if debug_enabled then
+        AnsiNote(col("@D[DEBUG]: @w" .. msg))
+    end
 end
 
 -- ============================================================================
--- FORMULA ENGINE
+-- FORMATTING
 -- ============================================================================
-local calculator = {
-    mastery = function(level)
-        local qp = 100 + (level - 1) * 20
-        local gold = 2000000 + (level - 1) * 250000
-        return qp, gold, "QP"
-    end,
-    instinct = function(level)
-        local trains = 200 + (level - 1) * 25
-        local gold = 2000000 + (level - 1) * 100000
-        return trains, gold, "Trains"
-    end,
-    potential = function(level)
-        local qp
-        if level <= 151 then qp = 100 + (level - 1) * 25
-        else qp = 3850 + (level - 151) * 50 end
-        return qp, 0, "QP"
-    end
-}
-
--- ============================================================================
--- GMCP DATA FETCHING
--- ============================================================================
-function get_live_stats()
-    local g, t, q = 0, 0, 0
-    local res, gmcparg = CallPlugin(GMCP_HANDLER, "gmcpval", "char.worth")
-    if res == 0 and gmcparg and gmcparg ~= "" then
-        local f = loadstring("return " .. gmcparg)
-        if f then 
-            local data = f()
-            g, t, q = tonumber(data.gold) or 0, tonumber(data.trains) or 0, tonumber(data.qp) or 0
-        end
-    end
-    return t, g, q
-end
-
--- ============================================================================
--- MAIN EXECUTION LOGIC
--- ============================================================================
-function calculate_progression(name, line, wildcards)
-    local system, start_lv, end_lv, channel = wildcards[1]:lower(), tonumber(wildcards[2]), tonumber(wildcards[3]), wildcards[4]
-    local cur_t, cur_g, cur_q = get_live_stats()
-    
-    if start_lv >= end_lv then
-        AnsiNote(col("@R[Error]: Start level must be lower than end level.@w"))
-        return
-    end
-
-    local total_main, total_gold, currency_name = 0, 0, ""
-    for i = (start_lv + 1), end_lv do
-        local main_cost, gold_cost, c_name = calculator[system](i)
-        total_main, total_gold, currency_name = total_main + main_cost, total_gold + gold_cost, c_name
-    end
-
-    print_output(system, start_lv, end_lv, total_main, total_gold, currency_name, cur_t, cur_g, cur_q)
-    
-    if channel and channel ~= "" then
-        report_to_channel(channel, system, start_lv, end_lv, total_main, total_gold, currency_name)
-    end
-end
-
 function format_num(amount)
     local formatted = tostring(math.floor(amount))
     while true do  
@@ -130,67 +114,170 @@ function format_num(amount)
     return formatted
 end
 
+function format_short(n)
+    if n >= 10^9 then return string.format("%.1fB", n / 10^9)
+    elseif n >= 10^6 then return string.format("%.1fM", n / 10^6)
+    elseif n >= 10^3 then return string.format("%.1fk", n / 10^3)
+    else return tostring(n) end
+end
+
+-- ============================================================================
+-- COMMANDS
+-- ============================================================================
+function toggle_debug(name, line, wildcards)
+    debug_enabled = not debug_enabled
+    SetVariable("debug_enabled", debug_enabled and "1" or "0")
+    SaveState()
+    local status = debug_enabled and "@GOn" or "@ROff"
+    AnsiNote(col("@D[@WSystem@D]: @wDebug messaging is now " .. status .. "@w."))
+    debug_msg("Event: debug_toggle | State: " .. tostring(debug_enabled))
+end
+
+function set_pup_costs(name, line, wildcards)
+    pup_trains = tonumber(wildcards[1])
+    pup_gold = tonumber(wildcards[2])
+    SetVariable("pup_trains", pup_trains)
+    SetVariable("pup_gold", pup_gold)
+    SaveState()
+    debug_msg("Event: settings_update | Tr: " .. pup_trains .. " | G: " .. pup_gold)
+    AnsiNote(col("@D[@WConfig@D]: @GUpdated conversion to @Y" .. pup_trains .. " @Gtr / @Y" .. format_num(pup_gold) .. " @Ggold.@w"))
+end
+
+-- ============================================================================
+-- ENGINE
+-- ============================================================================
+local calculator = {
+    mastery = function(level)
+        return 100 + (level - 1) * 20, 2000000 + (level - 1) * 250000, "QP"
+    end,
+    instinct = function(level)
+        return 200 + (level - 1) * 25, 2000000 + (level - 1) * 100000, "Trains"
+    end,
+    potential = function(level)
+        local qp = (level <= 151) and (100 + (level - 1) * 25) or (3850 + (level - 151) * 50)
+        return qp, 0, "QP"
+    end
+}
+
+function get_live_stats()
+    local g, t, q = 0, 0, 0
+    local res, gmcparg = CallPlugin(GMCP_HANDLER, "gmcpval", "char.worth")
+    if res == 0 and gmcparg and gmcparg ~= "" then
+        local f = loadstring("return " .. gmcparg)
+        if f then 
+            local data = f()
+            g, t, q = tonumber(data.gold) or 0, tonumber(data.trains) or 0, tonumber(data.qp) or 0
+        end
+    end
+    debug_msg("GMCP Worth Sync: Tr=" .. t .. " Gld=" .. g .. " QP=" .. q)
+    return t, g, q
+end
+
+function calculate_progression(name, line, wildcards)
+    local system, start_lv, end_lv, channel = wildcards[1]:lower(), tonumber(wildcards[2]), tonumber(wildcards[3]), wildcards[4]
+    debug_msg("Calc Logic: " .. system .. " " .. start_lv .. " to " .. end_lv)
+    
+    local cur_t, cur_g, cur_q = get_live_stats()
+    if start_lv >= end_lv then
+        AnsiNote(col("@R[Error]: Invalid level range.@w"))
+        return
+    end
+
+    local total_main, total_gold, currency_name = 0, 0, ""
+    for i = (start_lv + 1), end_lv do
+        local m, g, c = calculator[system](i)
+        total_main, total_gold, currency_name = total_main + m, total_gold + g, c
+    end
+
+    -- If channel is provided, skip display box and only report
+    if channel and channel ~= "" then
+        report_to_channel(channel, system, start_lv, end_lv, total_main, total_gold, currency_name, cur_t, cur_g)
+    else
+        print_output(system, start_lv, end_lv, total_main, total_gold, currency_name, cur_t, cur_g, cur_q)
+    end
+end
+
 function print_output(sys, min, max, main, gold, cname, cur_t, cur_g, cur_q)
-    AnsiNote(col("@W.----------------------------------------------------.@w"))
-    AnsiNote(col("@W| @Y" .. pad_line(sys:upper() .. " COST ANALYSIS") .. " @W|@w"))
-    AnsiNote(col("@W|----------------------------------------------------|@w"))
-    AnsiNote(col("@W| @C" .. pad_line("Level Range: " .. min .. " -> " .. max) .. " @W|@w"))
-    AnsiNote(col("@W| @G" .. pad_line("Total " .. cname .. ": " .. format_num(main))  .. " @W|@w"))
-    if gold > 0 then AnsiNote(col("@W| @G" .. pad_line("Total Gold:   " .. format_num(gold)) .. " @W|@w")) end
-    AnsiNote(col("@W|----------------------------------------------------|@w"))
+    local border = "@D" .. "." .. string.rep("-", BOX_WIDTH-2) .. "."
+    local footer = "@D" .. "'" .. string.rep("-", BOX_WIDTH-2) .. "'"
+    local separator = "@D|" .. string.rep("-", BOX_WIDTH-2) .. "|"
+
+    AnsiNote(col(border))
+    print_header("@W" .. sys:upper() .. " COST ANALYSIS")
+    AnsiNote(col(separator))
+    
+    print_line("@wRange:", "@Y" .. min .. " -> " .. max)
+    print_line("@wTotal " .. cname .. ":", "@Y" .. format_num(main))
+    
+    if gold > 0 then 
+        print_line("@wTotal Gold:", "@Y" .. format_num(gold))
+    end
+    
+    AnsiNote(col(separator))
 
     if sys == "potential" then
         local rem_qp = math.max(0, main - cur_q)
-        AnsiNote(col("@W| @Y" .. pad_line("Total QP Needed:     " .. format_num(main)) .. " @W|@w"))
-        AnsiNote(col("@W| @Y" .. pad_line("Remaining QP Needed: " .. format_num(rem_qp)) .. " @W|@w"))
-        AnsiNote(col("@W| @w" .. pad_line("(Using: " .. format_num(cur_q) .. " QP)") .. " @W|@w"))
-    elseif sys == "mastery" then
-        local max_p, req_g = math.ceil(gold / 33500), math.max(0, gold - cur_g)
-        local rem_qp, rem_p = math.max(0, main - cur_q), math.ceil(req_g / 33500)
-        AnsiNote(col("@W| @C" .. pad_line("Max Pups (from 0):     " .. format_num(max_p)) .. " @W|@w"))
-        AnsiNote(col("@W| @Y" .. pad_line("Remaining Pups Needed: " .. format_num(rem_p)) .. " @W|@w"))
-        AnsiNote(col("@W| @Y" .. pad_line("Remaining QP Needed:   " .. format_num(rem_qp)) .. " @W|@w"))
-        AnsiNote(col("@W| @w" .. pad_line("(Using: " .. format_num(cur_q) .. " QP / " .. format_num(cur_g) .. " Gold)") .. " @W|@w"))
+        print_line("@wRemaining QP:", "@Y" .. format_num(rem_qp))
     else
-        local max_p = math.ceil(math.max(main / 5, gold / 33500))
-        local req_t, req_g = math.max(0, main - cur_t), math.max(0, gold - cur_g)
-        local rem_p = math.ceil(math.max(req_t / 5, req_g / 33500))
-        AnsiNote(col("@W| @C" .. pad_line("Max Pups (from 0):     " .. format_num(max_p)) .. " @W|@w"))
-        AnsiNote(col("@W| @Y" .. pad_line("Remaining Pups Needed: " .. format_num(rem_p)) .. " @W|@w"))
-        AnsiNote(col("@W| @w" .. pad_line("(Using: " .. format_num(cur_t) .. " Trains / " .. format_num(cur_g) .. " Gold)") .. " @W|@w"))
+        local max_p, rem_p = 0, 0
+        if sys == "mastery" then
+            max_p = math.ceil(gold / pup_gold)
+            rem_p = math.ceil(math.max(0, gold - cur_g) / pup_gold)
+        else
+            max_p = math.ceil(math.max(main / pup_trains, gold / pup_gold))
+            rem_p = math.ceil(math.max(math.max(0, main - cur_t) / pup_trains, math.max(0, gold - cur_g) / pup_gold))
+        end
+        
+        print_line("@wMax Pups:", "@Y" .. format_num(max_p))
+        print_line("@wRemaining Pups:", "@G" .. format_num(rem_p))
     end
-    AnsiNote(col("@W'----------------------------------------------------'@w"))
+    
+    AnsiNote(col(separator))
+    local rate_str = "@DRate: " .. pup_trains .. " Tr / " .. format_num(pup_gold) .. " Gold"
+    AnsiNote(col("@D| " .. rate_str .. string.rep(" ", BOX_WIDTH - 4 - #strip_codes(rate_str)) .. " @D|"))
+    AnsiNote(col(footer))
 end
 
-function report_to_channel(chan, sys, min, max, main, gold, cname)
-    -- Using @ color codes for channel send
-    local msg = string.format("@W[@Y%s @C%d@W-@C%d@W]: Total %s: @G%s", sys:upper(), min, max, cname, format_num(main))
-    if gold > 0 then msg = msg .. " @W| Gold: @G" .. format_num(gold) end
+function report_to_channel(chan, sys, min, max, main, gold, cname, cur_t, cur_g)
+    debug_msg("Event: reporting_to_channel | Target: " .. chan)
+    
+    -- Numbers in Yellow (@Y), labels and bars in Dark Grey (@D)
+    local gold_part = (gold > 0) and (" @D| Gold: @Y" .. format_short(gold)) or ""
+    local msg = string.format("@D[@Y%s @W%d-%d@D]: @D%s: @Y%s%s", sys:upper(), min, max, cname, format_num(main), gold_part)
+    
     if sys ~= "potential" then
-        local max_p = (sys == "mastery") and math.ceil(gold / 33500) or math.ceil(math.max(main / 5, gold / 33500))
-        msg = msg .. " @W| Est. Pups: @Y" .. format_num(max_p)
+        local max_p, rem_p = 0, 0
+        if sys == "mastery" then
+            max_p = math.ceil(gold / pup_gold)
+            rem_p = math.ceil(math.max(0, gold - cur_g) / pup_gold)
+        else
+            max_p = math.ceil(math.max(main / pup_trains, gold / pup_gold))
+            rem_p = math.ceil(math.max(math.max(0, main - cur_t) / pup_trains, math.max(0, gold - cur_g) / pup_gold))
+        end
+        -- Bars in Dark Grey (@D), Rem in Green (@G), Max in White (@W)
+        msg = msg .. string.format(" @D| Est Pups: @G%s @D/ @W%s", format_num(rem_p), format_num(max_p))
     end
     
     Execute(chan .. " " .. msg)
-    AnsiNote(col("@GReported stats to @Y" .. chan .. "@w"))
+    AnsiNote(col("@D[@WSystem@D]: @GReported analysis to @Y" .. chan .. "@w"))
 end
 
 function show_help()
-    AnsiNote(col("@W.----------------------------------------------------.@w"))
-    AnsiNote(col("@W| @Y" .. pad_line("ENDGAME COST CALCULATOR HELP") .. " @W|@w"))
-    AnsiNote(col("@W|----------------------------------------------------|@w"))
-    AnsiNote(col("@W| @w" .. pad_line("Syntax: calc <system> <start> <end> [channel]") .. " @W|@w"))
-    AnsiNote(col("@W|                                                    |@w"))
-    AnsiNote(col("@W| @w" .. pad_line("Examples:") .. " @W|@w"))
-    AnsiNote(col("@W| @G" .. pad_line("  calc instinct 0 100") .. " @W|@w"))
-    AnsiNote(col("@W| @G" .. pad_line("  calc mastery 20 50 gossip") .. " @W|@w"))
-    AnsiNote(col("@W|                                                    |@w"))
-    AnsiNote(col("@W| @w" .. pad_line("Systems: @Cinstinct, mastery, potential") .. " @W|@w"))
-    AnsiNote(col("@W'----------------------------------------------------'@w"))
+    local d_status = debug_enabled and "@GOn" or "@ROff"
+    AnsiNote(col("@D.--------------------------------------------.@w"))
+    print_header("@WENDGAME COST CALCULATOR HELP")
+    AnsiNote(col("@D|--------------------------------------------|@w"))
+    AnsiNote(col("@D| @D" .. string.format("%-42s", "calc <system> <start> <end> [channel]") .. " @D|@w"))
+    AnsiNote(col("@D| @D" .. string.format("%-42s", "calc pups <trains> <gold>") .. " @D|@w"))
+    AnsiNote(col("@D| @D" .. string.format("%-42s", "calc debug (Toggle Debug Mode)") .. " @D|@w"))
+    AnsiNote(col("@D|                                            |@w"))
+    AnsiNote(col("@D| @D" .. string.format("%-42s", "Debug Status: " .. d_status) .. " @D|@w"))
+    AnsiNote(col("@D'--------------------------------------------'@w"))
 end
 
 function OnPluginInstall()
-    AnsiNote(col("@GEndgame_Cost_Calculator v4.3 loaded. Type @Ycalc help@G.@w"))
+    AnsiNote(col("@D[@YECC@D]: @DEndgame Cost Calculator loaded. For help: @Ccalc help@w"))
+    debug_msg("Event: install | Palette: Slate/Gold | Version: 5.8")
 end
 
 ]]>
