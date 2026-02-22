@@ -262,17 +262,41 @@ function report_to_channel(chan, sys, min, max, main, gold, cname, cur_t, cur_g)
     AnsiNote(col("@D[@WSystem@D]: @GReported analysis to @Y" .. chan .. "@w"))
 end
 
+-- ============================================================================
+-- UI & ALIGNMENT ENGINE
+-- ============================================================================
+function pad_line(text, length)
+    length = length or 52
+    local visible_len = #strip_codes(text)
+    local padding = length - visible_len
+    if padding < 0 then padding = 0 end
+    return text .. string.rep(" ", padding)
+end
+
 function show_help()
+    debug_msg("Event: show_help | Layout: Fixed Alignment Engine")
     local d_status = debug_enabled and "@GOn" or "@ROff"
-    AnsiNote(col("@D.--------------------------------------------.@w"))
-    print_header("@WENDGAME COST CALCULATOR HELP")
-    AnsiNote(col("@D|--------------------------------------------|@w"))
-    AnsiNote(col("@D| @D" .. string.format("%-42s", "calc <system> <start> <end> [channel]") .. " @D|@w"))
-    AnsiNote(col("@D| @D" .. string.format("%-42s", "calc pups <trains> <gold>") .. " @D|@w"))
-    AnsiNote(col("@D| @D" .. string.format("%-42s", "calc debug (Toggle Debug Mode)") .. " @D|@w"))
-    AnsiNote(col("@D|                                            |@w"))
-    AnsiNote(col("@D| @D" .. string.format("%-42s", "Debug Status: " .. d_status) .. " @D|@w"))
-    AnsiNote(col("@D'--------------------------------------------'@w"))
+    
+    AnsiNote(col("@D.------------------------------------------------------.@w"))
+    AnsiNote(col("@D| @W" .. pad_line("ENDGAME COST CALCULATOR - HELP") .. " @D|@w"))
+    AnsiNote(col("@D|------------------------------------------------------|@w"))
+    AnsiNote(col("@D| @D" .. pad_line("Command Syntax:") .. " @D|@w"))
+    AnsiNote(col("@D| @W" .. pad_line("  calc <system> <start> <end> [<channel>]") .. " @D|@w"))
+    AnsiNote(col("@D| @W" .. pad_line("  calc pups <trains> <gold>") .. " @D|@w"))
+    AnsiNote(col("@D| @W" .. pad_line("  calc debug") .. " @D|@w"))
+    AnsiNote(col("@D| " .. pad_line("") .. " @D|@w"))
+    AnsiNote(col("@D| @D" .. pad_line("Systems: instinct, mastery, potential") .. " @D|@w"))
+    AnsiNote(col("@D| " .. pad_line("") .. " @D|@w"))
+    AnsiNote(col("@D| @D" .. pad_line("Note: 'calc pups' sets your estimated trains and") .. " @D|@w"))
+    AnsiNote(col("@D| @D" .. pad_line("      gold required per pup for calculations.") .. " @D|@w"))
+    AnsiNote(col("@D| " .. pad_line("") .. " @D|@w"))
+    AnsiNote(col("@D| @D" .. pad_line("Examples:") .. " @D|@w"))
+    AnsiNote(col("@D| @W" .. pad_line("  calc instinct 80 100") .. " @D|@w"))
+    AnsiNote(col("@D| @W" .. pad_line("  calc mastery 0 50 gt") .. " @D|@w"))
+    AnsiNote(col("@D| @W" .. pad_line("  calc pups 5 200000") .. " @D|@w"))
+    AnsiNote(col("@D|------------------------------------------------------|@w"))
+    AnsiNote(col("@D| @D" .. pad_line("Debug Status: " .. d_status) .. " @D|@w"))
+    AnsiNote(col("@D'------------------------------------------------------'@w"))
 end
 
 function OnPluginInstall()
