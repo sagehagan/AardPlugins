@@ -194,8 +194,15 @@ function AdjustGold(amt)
 end
 
 function GetServerDate()
-    -- UTC anchor (!) minus 18,000 seconds (5 hours) for EST
-    return os.date("!%d %b %Y", os.time() - 18000)
+    -- Get current local time table to check for DST status
+    local now = os.date("*t")
+    
+    -- EST is UTC-5 (18000s), EDT is UTC-4 (14400s)
+    -- now.isdst returns true if DST is active on the host machine
+    local offset = now.isdst and 14400 or 18000
+    
+    -- Return formatted date based on the calculated Eastern Time offset
+    return os.date("!%d %b %Y", os.time() - offset)
 end
 
 function CleanDate(s)
